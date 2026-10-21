@@ -1,7 +1,9 @@
 import json, os, re
 from pathlib import Path
 from groq import Groq
-
+from dotenv import load_dotenv
+load_dotenv()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 _DB_PATH = Path(__file__).parent.parent / "data" / "disease_db.json"
 with open(_DB_PATH) as f:
     DISEASE_DB = json.load(f)
@@ -49,7 +51,7 @@ Return ONLY valid JSON, no markdown, no explanation:
 }}
 """
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=GROQ_MODEL,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=900,
     )

@@ -10,7 +10,8 @@ from pathlib import Path
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
-
+load_dotenv()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 from agent.agent import process_message, client as groq_client
 from agent.diagnose import diagnose_image
 from agent.guardrails import check_message, check_image
@@ -55,7 +56,7 @@ async def extract_farmer_data(message: str) -> dict:
         return {}
     try:
         response = await groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=[
                 {
                     "role": "system",

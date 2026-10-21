@@ -1,7 +1,7 @@
 import os
 import asyncio
 from datetime import datetime
-
+import time
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 # Load env
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 # Tools
 from agent.tools import get_weather, get_mandi_price, get_treatment
@@ -44,7 +45,7 @@ def send_whatsapp(to: str, message: str, retries=3):
 
         except Exception as e:
             print(f"⚠️ Retry {attempt + 1} failed for {to}: {e}")
-            asyncio.sleep(2)
+            time.sleep(2)
 
     print(f"❌ Failed to send to {to} after retries")
 
@@ -89,7 +90,7 @@ async def generate_briefing(db, farmer_id: str) -> str:
         today = datetime.now().strftime("%A, %d %B %Y")
 
         response = await groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=[
                 {
                     "role": "system",
