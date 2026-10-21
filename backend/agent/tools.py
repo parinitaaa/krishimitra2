@@ -73,7 +73,7 @@ def get_weather(location: str) -> str:
 
 @tool
 def get_mandi_price(crop: str) -> str:
-    """Get live mandi prices for a crop."""
+    """Get live mandi prices for a crop with automatic web fallback and database caching."""
     fallback = {
         "tomato": {"min": 800, "max": 1500, "modal": 1200},
         "potato": {"min": 600, "max": 1200, "modal": 900},
@@ -82,39 +82,32 @@ def get_mandi_price(crop: str) -> str:
         "rice": {"min": 1800, "max": 2800, "modal": 2200},
         "cotton": {"min": 5500, "max": 6500, "modal": 6000},
     }
+
     try:
-        key = os.getenv("DATA_GOV_API_KEY") or os.getenv("AGMARKNET_API_KEY")
-        if key:
-            res = requests.get(
-                "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070",
-                params={
-                    "api-key": key,
-                    "format": "json",
-                    "limit": 5,
-                    "filters[commodity]": crop.capitalize(),
-                },
-                timeout=10,
-            )
-            if res.status_code == 200:
-                data = res.json()
-                records = data.get("records", [])
-                if records:
-                    result = f"Live Mandi Prices for {crop}:\n"
-                    for r in records[:3]:
-                        market = r.get("market") or r.get("Market") or "N/A"
-                        state = r.get("state") or r.get("State") or "N/A"
-                        min_p = r.get("min_price") or r.get("Min Price") or r.get("Min_Price") or "N/A"
-                        max_p = r.get("max_price") or r.get("Max Price") or r.get("Max_Price") or "N/A"
-                        modal_p = r.get("modal_price") or r.get("Modal Price") or r.get("Modal_Price") or "N/A"
-                        result += (
-                            f"Market: {market}, {state}\n"
-                            f"Min: Rs.{min_p} | "
-                            f"Max: Rs.{max_p} | "
-                            f"Modal: Rs.{modal_p}\n---\n"
-                        )
-                    return result
-    except Exception:
-        pass
+        from services.db import SessionLocal
+        from services.price_fetcher import ensure_commodity_prices_fresh
+        from services.market_service import get_all_latest_prices
+
+        db = SessionLocal()
+        try:
+            # Check today's fetch in DB; if missing, fetches from API / web scraper & upserts
+            ensure_commodity_prices_fresh(crop, db)
+            prices = get_all_latest_prices(crop, db)
+
+            if prices:
+                result = f"Live Mandi Prices for {crop.capitalize()}:\n"
+                for r in prices[:4]:
+                    result += (
+                        f"Market: {r.get('market')}, {r.get('district', '')} ({r.get('state')})\n"
+                        f"Modal: Rs.{r.get('modal_price')}/qtl (Min: Rs.{r.get('min_price')} | Max: Rs.{r.get('max_price')})\n"
+                        f"Date: {r.get('date')}\n---\n"
+                    )
+                return result
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[whatsapp_agent] Error getting mandi price for {crop}: {e}")
+
     crop_lower = crop.lower()
     if crop_lower in fallback:
         p = fallback[crop_lower]
