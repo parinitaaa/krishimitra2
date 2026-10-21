@@ -83,7 +83,7 @@ def get_mandi_price(crop: str) -> str:
         "cotton": {"min": 5500, "max": 6500, "modal": 6000},
     }
     try:
-        key = os.getenv("AGMARKNET_API_KEY")
+        key = os.getenv("DATA_GOV_API_KEY") or os.getenv("AGMARKNET_API_KEY")
         if key:
             res = requests.get(
                 "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070",
@@ -91,21 +91,29 @@ def get_mandi_price(crop: str) -> str:
                     "api-key": key,
                     "format": "json",
                     "limit": 5,
-                    "filters[Commodity]": crop.capitalize(),
+                    "filters[commodity]": crop.capitalize(),
                 },
-                timeout=5,
-            ).json()
-            if res.get("records"):
-                result = f"Live Mandi Prices for {crop}:\n"
-                for r in res["records"][:3]:
-                    result += (
-                        f"Market: {r.get('Market', 'N/A')}, {r.get('State', 'N/A')}\n"
-                        f"Min: Rs.{r.get('Min Price', 'N/A')} | "
-                        f"Max: Rs.{r.get('Max Price', 'N/A')} | "
-                        f"Modal: Rs.{r.get('Modal Price', 'N/A')}\n---\n"
-                    )
-                return result
-    except:
+                timeout=10,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                records = data.get("records", [])
+                if records:
+                    result = f"Live Mandi Prices for {crop}:\n"
+                    for r in records[:3]:
+                        market = r.get("market") or r.get("Market") or "N/A"
+                        state = r.get("state") or r.get("State") or "N/A"
+                        min_p = r.get("min_price") or r.get("Min Price") or r.get("Min_Price") or "N/A"
+                        max_p = r.get("max_price") or r.get("Max Price") or r.get("Max_Price") or "N/A"
+                        modal_p = r.get("modal_price") or r.get("Modal Price") or r.get("Modal_Price") or "N/A"
+                        result += (
+                            f"Market: {market}, {state}\n"
+                            f"Min: Rs.{min_p} | "
+                            f"Max: Rs.{max_p} | "
+                            f"Modal: Rs.{modal_p}\n---\n"
+                        )
+                    return result
+    except Exception:
         pass
     crop_lower = crop.lower()
     if crop_lower in fallback:
