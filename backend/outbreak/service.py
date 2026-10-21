@@ -1,12 +1,16 @@
 from outbreak.db_queries import get_nearby_farmers, distance_km, get_direction
 import services.whatsapp_service as ws
 from groq import AsyncGroq
+import os
+from dotenv import load_dotenv
+load_dotenv()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 groq_client = AsyncGroq()  # uses GROQ_API_KEY from env
 
 async def get_preventive_steps_ai(disease, crop):
     response = await groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=GROQ_MODEL,
         messages=[{
             "role": "user",
             "content": f"Give exactly 4 short preventive steps for {disease} in {crop} crops. Return only a numbered list, no extra text."

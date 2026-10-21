@@ -14,6 +14,7 @@ from services.location_state import _pending_location
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 # Fallback to backend/.env when running from project root.
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 from farmer_store import get_farmer_location, get_farmer_language, normalize_phone
 from services.market_service import extract_state_filter
 client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
@@ -132,7 +133,7 @@ async def process_message(
             messages.append({"role": "user", "content": f"Additional data:\n{tool_result}"})
 
         response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=messages,
             temperature=0.3,
             max_tokens=600,
