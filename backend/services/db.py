@@ -16,7 +16,12 @@ DATABASE_URL = (
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL is missing in .env")
 
-engine_kwargs = {}
+engine_kwargs = {
+    "pool_pre_ping": True,
+    "pool_recycle": 1800,
+    "pool_size": 5,
+    "max_overflow": 5,
+}
 try:
     parsed = urlparse(DATABASE_URL)
     # Supabase Postgres requires SSL.

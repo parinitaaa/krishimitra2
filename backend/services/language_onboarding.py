@@ -1,110 +1,67 @@
+# services/language_onboarding.py
 """
-First-contact language selection for WhatsApp. Persists to farmers.language via farmer_store.
+First-contact language selection for WhatsApp.
+Driven by farmer onboarding_step, accepting 1/2/3 or language names in any script.
 """
 
 from __future__ import annotations
-
 import re
 
-from farmer_store import get_farmer_language, set_farmer_language, normalize_phone
-from services.profile_state import mark_pending_name
-
-LANGUAGE_PROMPT = """🌾 KrishiMitra mein aapka swagat hai!
-ಕೃಷಿಮಿತ್ರಕ್ಕೆ ಸ್ವಾಗತ! / Welcome to KrishiMitra!
-
-Apni bhasha chunein:
-ನಿಮ್ಮ ಭಾಷೆ ಆಯ್ಕೆ ಮಾಡಿ:
-Choose your language:
-
-1️⃣  हिंदी (Hindi)
-2️⃣  ಕನ್ನಡ (Kannada)
-3️⃣  English
-
-1, 2 ya 3 reply karein / 1, 2 ಅಥವಾ 3 ಉತ್ತರಿಸಿ / Reply with 1, 2 or 3"""
-
-_CONFIRM = {
-    "hindi": (
-        "Dhanyavaad! Aapki bhasha *Hindi* set ho gayi hai.\n\n"
-        "Ab kripya apna *naam* type karke bhejein (ek line mein).\n\n"
-        "Koi aur madad chahiye? 🌾"
-    ),
-    "kannada": (
-        "ಧನ್ಯವಾದಗಳು! ನಿಮ್ಮ ಭಾಷೆ *ಕನ್ನಡ* ಆಯ್ಕೆ ಮಾಡಲಾಗಿದೆ.\n\n"
-        "ಈಗ ದಯವಿಟ್ಟು ನಿಮ್ಮ *ಹೆಸರು* ಟೈಪ್ ಮಾಡಿ (ಒಂದೇ ಸಾಲು).\n\n"
-        "ಮತ್ತಷ್ಟು ಸಹಾಯ ಬೇಕೇ? 🌾"
-    ),
-    "english": (
-        "Thank you! Your language is set to *English*.\n\n"
-        "Please type your *name* (one line).\n\n"
-        "Need anything else? 🌾"
-    ),
-}
+from farmer_store import (
+    normalize_phone,
+    set_farmer_language,
+    set_onboarding_step,
+    update_farmer_profile,
+)
+from services.i18n import (
+    TRILINGUAL_GREETING_MENU,
+    get_string,
+    get_salutation,
+)
 
 
-def _is_simple_greeting(text: str) -> bool:
+def parse_language_choice(text: str) -> str | None:
     t = (text or "").strip().lower()
     if not t:
-        return False
-    words = t.split()
-    if len(words) > 3:
-        return False
-    greetings = frozenset(
-        {
-            "hi",
-            "hello",
-            "hey",
-            "namaste",
-            "namaskar",
-            "hlo",
-            "hii",
-            "hallo",
-            "helo",
-        }
-    )
-    if t in greetings:
-        return True
-    if len(words) == 2 and words[0] == "good" and words[1] in (
-        "morning",
-        "evening",
-        "afternoon",
-        "night",
-    ):
-        return True
-    return False
-
-
-def _parse_language_choice(text: str) -> str | None:
-    t = (text or "").strip()
-    if not t:
         return None
+
+    # Number mapping
     digit_only = "".join(c for c in t if c.isdigit())
-    if len(digit_only) != 1 or digit_only not in "123":
-        return None
-    # Avoid "1 tomato" / "option 2 please" — require no letter scripts in the message
-    if re.search(r"[a-zA-Z\u0900-\u0FFF\u0C80-\u0CFF]", t):
-        return None
-    return {"1": "hindi", "2": "kannada", "3": "english"}[digit_only]
+    if len(digit_only) == 1 and digit_only in "123":
+        return {"1": "hindi", "2": "kannada", "3": "english"}[digit_only]
 
-
-def maybe_handle_language_onboarding(phone: str, body: str) -> str | None:
-    """
-    If farmer has no language set:
-    - greeting -> return language menu
-    - 1 / 2 / 3 -> save language and return confirmation
-    Otherwise return None (caller continues normal flow).
-    """
-    pid = normalize_phone(phone)
-    if get_farmer_language(pid):
-        return None
-
-    choice = _parse_language_choice(body)
-    if choice:
-        set_farmer_language(pid, choice)
-        mark_pending_name(pid)
-        return _CONFIRM[choice]
-
-    if _is_simple_greeting(body):
-        return LANGUAGE_PROMPT
+    # Name mapping in multiple scripts
+    if "hindi" in t or "हिंदी" in t or "हिन्दी" in t:
+        return "hindi"
+    if "kannada" in t or "ಕನ್ನಡ" in t or "kanada" in t:
+        return "kannada"
+    if "english" in t or "इंग्लिश" in t or "ಇಂಗ್ಲಿಷ್" in t or "angrezi" in t or "eng" in t:
+        return "english"
 
     return None
- 
+
+
+def handle_language_selection(phone: str, body: str, profile_name: str | None = None) -> tuple[str, bool]:
+    """
+    Handles language selection step.
+    Returns (reply_message, advanced_to_next_step).
+    """
+    pid = normalize_phone(phone)
+    lang_choice = parse_language_choice(body)
+
+    if lang_choice:
+        set_farmer_language(pid, lang_choice)
+        set_onboarding_step(pid, "ask_name")
+
+        confirm_msg = get_string("lang_confirm", lang_choice)
+        if profile_name and profile_name.strip():
+            # Offer profile name
+            name_msg = get_string("name_offer_profile", lang_choice, profile_name=profile_name.strip())
+        else:
+            name_msg = get_string("ask_name", lang_choice)
+
+        reply = f"{confirm_msg}\n\n{name_msg}"
+        return reply, True
+
+    # If message is not recognized as a language choice, return the trilingual menu
+    return TRILINGUAL_GREETING_MENU, False

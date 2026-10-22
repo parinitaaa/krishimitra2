@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import date, datetime, timezone
 from sqlalchemy import text
 from services.db import SessionLocal
@@ -22,11 +23,459 @@ def get_farmer_language(phone: str) -> str | None:
     return s if s else None
 
 
+def set_farmer_language(phone: str, language: str) -> None:
+    """Persist language on farmers row (upserts phone row if missing)."""
+    pid = normalize_phone(phone)
+    lang = (language or "").strip().lower()
+    if not lang:
+        return
+    with SessionLocal() as db:
+        db.execute(
+            text(
+                """
+                INSERT INTO farmers (phone, language, last_seen)
+                VALUES (:phone, :language, NOW())
+                ON CONFLICT (phone) DO UPDATE
+                SET language = EXCLUDED.language, last_seen = NOW()
+                """
+            ),
+            {"phone": pid, "language": lang},
+        )
+        db.commit()
+
+
+def get_farmer(phone: str) -> dict:
+    """
+    Returns farmer dict.
+    Returns real None for missing name, location, soil_type, and language (no hardcoded fallbacks).
+    """
+    phone = normalize_phone(phone)
+    with SessionLocal() as db:
+        result = db.execute(
+            text(
+                "SELECT phone, name, crops, location, soil_type, history, messages, language, "
+                "lat, lng, onboarding_step, water_source, state, district, farm_size_acres "
+                "FROM farmers WHERE phone = :phone"
+            ),
+            {"phone": phone},
+        ).fetchone()
+
+        if not result:
+            db.execute(
+                text("INSERT INTO farmers (phone) VALUES (:phone) ON CONFLICT DO NOTHING"),
+                {"phone": phone},
+            )
+            db.commit()
+            result = db.execute(
+                text(
+                    "SELECT phone, name, crops, location, soil_type, history, messages, language, "
+                    "lat, lng, onboarding_step, water_source, state, district, farm_size_acres "
+                    "FROM farmers WHERE phone = :phone"
+                ),
+                {"phone": phone},
+            ).fetchone()
+
+    return {
+        "phone":           result[0],
+        "name":            result[1] if result[1] else None,
+        "crops":           result[2] or [],
+        "location":        result[3] if result[3] else None,
+        "soil_type":       result[4] if result[4] and result[4] != "unknown" else None,
+        "history":         result[5] or [],
+        "messages":        result[6] or [],
+        "language":        result[7] if result[7] else None,
+        "lat":             result[8] if len(result) > 8 else None,
+        "lng":             result[9] if len(result) > 9 else None,
+        "onboarding_step": result[10] if len(result) > 10 else None,
+        "water_source":    result[11] if len(result) > 11 else None,
+        "state":           result[12] if len(result) > 12 else None,
+        "district":        result[13] if len(result) > 13 else None,
+        "farm_size_acres": float(result[14]) if len(result) > 14 and result[14] is not None else None,
+    }
+
+
+def get_or_create_farmer(phone: str) -> dict:
+    return get_farmer(phone)
+
+
+def set_onboarding_step(phone: str, step: str) -> None:
+    pid = normalize_phone(phone)
+    with SessionLocal() as db:
+        db.execute(
+            text("UPDATE farmers SET onboarding_step = :step, last_seen = NOW() WHERE phone = :phone"),
+            {"phone": pid, "step": step},
+        )
+        db.commit()
+
+
+# ── Conversation State Helpers ────────────────────────────────────────────────
+
+def get_state(phone: str) -> dict | None:
+    pid = normalize_phone(phone)
+    with SessionLocal() as db:
+        row = db.execute(
+            text("SELECT flow, step, data, updated_at FROM conversation_state WHERE phone = :phone"),
+            {"phone": pid},
+        ).fetchone()
+    if not row:
+        return None
+    data = row[2] if isinstance(row[2], dict) else {}
+    return {
+        "flow": row[0],
+        "step": row[1],
+        "data": data,
+        "updated_at": row[3],
+    }
+
+
+def set_state(phone: str, flow: str, step: str, data: dict = None) -> None:
+    pid = normalize_phone(phone)
+    payload_json = json.dumps(data or {})
+    with SessionLocal() as db:
+        db.execute(
+            text("""
+                INSERT INTO conversation_state (phone, flow, step, data, updated_at)
+                VALUES (:phone, :flow, :step, cast(:data as jsonb), NOW())
+                ON CONFLICT (phone) DO UPDATE
+                SET flow = EXCLUDED.flow,
+                    step = EXCLUDED.step,
+                    data = EXCLUDED.data,
+                    updated_at = NOW()
+            """),
+            {"phone": pid, "flow": flow, "step": step, "data": payload_json},
+        )
+        db.commit()
+
+
+def clear_state(phone: str) -> None:
+    pid = normalize_phone(phone)
+    with SessionLocal() as db:
+        db.execute(
+            text("DELETE FROM conversation_state WHERE phone = :phone"),
+            {"phone": pid},
+        )
+        db.commit()
+
+
+# ── Chat History Helpers ──────────────────────────────────────────────────────
+
+def add_chat(phone: str, role: str, content: str) -> None:
+    pid = normalize_phone(phone)
+    with SessionLocal() as db:
+        db.execute(
+            text("""
+                INSERT INTO chat_history (phone, role, content, created_at)
+                VALUES (:phone, :role, :content, NOW())
+            """),
+            {"phone": pid, "role": role, "content": content},
+        )
+        db.execute(
+            text("UPDATE farmers SET last_message_at = NOW(), last_seen = NOW() WHERE phone = :phone"),
+            {"phone": pid},
+        )
+        db.commit()
+
+
+def get_chat_history(phone: str, limit: int = 10) -> list[dict]:
+    pid = normalize_phone(phone)
+    with SessionLocal() as db:
+        rows = db.execute(
+            text("""
+                SELECT role, content
+                FROM chat_history
+                WHERE phone = :phone
+                ORDER BY created_at DESC
+                LIMIT :limit
+            """),
+            {"phone": pid, "limit": limit},
+        ).fetchall()
+    # Reverse to return in chronological order
+    return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+
+
+def save_message(phone: str, user_msg: str, bot_msg: str):
+    """
+    Persist chat to chat_history table (discontinues unbounded JSON growth in farmers.messages).
+    """
+    pid = normalize_phone(phone)
+    add_chat(pid, "user", user_msg)
+    add_chat(pid, "assistant", bot_msg)
+
+
+# ── Message Deduplication Helper ──────────────────────────────────────────────
+
+def mark_message_processed(message_sid: str) -> bool:
+    """
+    Returns True if message_sid was newly inserted (first time seen),
+    or False if message_sid was already processed.
+    """
+    if not message_sid:
+        return True
+    with SessionLocal() as db:
+        res = db.execute(
+            text("""
+                INSERT INTO processed_messages (message_sid, created_at)
+                VALUES (:sid, NOW())
+                ON CONFLICT (message_sid) DO NOTHING
+            """),
+            {"sid": message_sid},
+        )
+        db.commit()
+        return res.rowcount > 0
+
+
+# ── Profile & Farmer Location Updates ────────────────────────────────────────
+
+def update_farmer_profile(phone: str, **kwargs):
+    phone = normalize_phone(phone)
+    # Ensure row exists
+    get_farmer(phone)
+
+    allowed = {
+        "name", "crops", "location", "soil_type", "water_source",
+        "state", "district", "farm_size_acres", "onboarding_step", "language"
+    }
+    fields, values = [], {"phone": phone}
+
+    for key, val in kwargs.items():
+        if key in allowed and val is not None:
+            fields.append(f"{key} = :{key}")
+            values[key] = val
+
+    if not fields:
+        return
+
+    fields.append("last_seen = NOW()")
+    with SessionLocal() as db:
+        db.execute(
+            text(f"UPDATE farmers SET {', '.join(fields)} WHERE phone = :phone"),
+            values,
+        )
+        db.commit()
+
+
+def add_to_history(phone: str, issue: str, treatment: str):
+    phone = normalize_phone(phone)
+    event = json.dumps([{
+        "date":      str(date.today()),
+        "issue":     issue,
+        "treatment": treatment,
+    }])
+    with SessionLocal() as db:
+        db.execute(
+            text("""
+                UPDATE farmers
+                SET history = COALESCE(history, '[]'::jsonb) || cast(:event as jsonb)
+                WHERE phone = :phone
+            """),
+            {"event": event, "phone": phone},
+        )
+        db.commit()
+
+
+def _parse_last_detection_row(raw) -> dict | None:
+    """Support jsonb object, JSON string, or legacy 'bbox|severity' text."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        d = dict(raw)
+        b = d.get("bbox_pct")
+        if b is not None:
+            try:
+                d["affected_pct"] = float(b)
+            except (TypeError, ValueError):
+                pass
+        return d
+    if isinstance(raw, str):
+        raw_s = raw.strip()
+        if raw_s.startswith("{"):
+            try:
+                data = json.loads(raw_s)
+                b = data.get("bbox_pct")
+                if b is not None:
+                    try:
+                        data["affected_pct"] = float(b)
+                    except (TypeError, ValueError):
+                        pass
+                return data
+            except Exception:
+                pass
+        parts = raw_s.split("|")
+        try:
+            pct = float(parts[0])
+            sev = parts[1] if len(parts) > 1 else "unknown"
+            return {
+                "affected_pct": pct,
+                "bbox_pct":     pct,
+                "severity":     sev,
+                "disease":      "Crop disease",
+            }
+        except (ValueError, IndexError):
+            pass
+    return None
+
+
+def get_last_detection(phone: str) -> dict | None:
+    """Last crop diagnosis: returns real None if nothing is stored (no fake 20%)."""
+    phone = normalize_phone(phone)
+    try:
+        with SessionLocal() as db:
+            result = db.execute(
+                text("SELECT last_detection FROM farmers WHERE phone = :phone"),
+                {"phone": phone},
+            ).fetchone()
+        if result and result[0] is not None:
+            return _parse_last_detection_row(result[0])
+    except Exception as e:
+        print(f"[FarmerStore] get_last_detection error: {e}")
+
+    return None
+
+
+def get_farmer_location(phone: str) -> dict | None:
+    """Returns saved lat/lng or None if not set yet."""
+    phone = normalize_phone(phone)
+    with SessionLocal() as db:
+        result = db.execute(
+            text("SELECT lat, lng FROM farmers WHERE phone = :phone"),
+            {"phone": phone},
+        ).fetchone()
+
+    if result and result[0] is not None and result[1] is not None:
+        return {"lat": result[0], "lng": result[1]}
+    return None
+
+
+def save_farmer_location(phone: str, lat: float, lng: float):
+    phone = normalize_phone(phone)
+    with SessionLocal() as db:
+        db.execute(
+            text("""
+                INSERT INTO farmers (phone, lat, lng)
+                VALUES (:phone, :lat, :lng)
+                ON CONFLICT (phone) DO UPDATE
+                SET lat = :lat, lng = :lng, last_seen = NOW()
+            """),
+            {"phone": phone, "lat": lat, "lng": lng},
+        )
+        db.commit()
+    print(f"[FarmerStore] Saved location for {phone}: {lat}, {lng}")
+
+
+def save_price_alert(phone: str, commodity: str, target_price: float, direction: str, market: str = None):
+    phone = normalize_phone(phone)
+    with SessionLocal() as db:
+        db.execute(
+            text("""
+                INSERT INTO price_alerts (phone, commodity, target_price, direction, market)
+                VALUES (:phone, :commodity, :target_price, :direction, :market)
+            """),
+            {
+                "phone": phone,
+                "commodity": commodity,
+                "target_price": target_price,
+                "direction": direction,
+                "market": market,
+            },
+        )
+        db.commit()
+    print(f"[Alert] Saved: {phone} wants {commodity} {direction} Rs.{target_price}")
+
+
+def get_active_alerts() -> list:
+    with SessionLocal() as db:
+        rows = db.execute(
+            text("""
+                SELECT id, phone, commodity, target_price, direction, market
+                FROM price_alerts WHERE active = TRUE
+            """)
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "phone": r[1],
+            "commodity": r[2],
+            "target_price": float(r[3]),
+            "direction": r[4],
+            "market": r[5] if len(r) > 5 else None,
+        }
+        for r in rows
+    ]
+
+
+def deactivate_alert(alert_id: int):
+    with SessionLocal() as db:
+        db.execute(
+            text("UPDATE price_alerts SET active = FALSE WHERE id = :id"),
+            {"id": alert_id},
+        )
+        db.commit()
+
+
+def get_farmer_alerts(phone: str) -> list[dict]:
+    pid = normalize_phone(phone)
+    with SessionLocal() as db:
+        rows = db.execute(
+            text("""
+                SELECT id, commodity, target_price, direction, market, created_at
+                FROM price_alerts
+                WHERE phone = :phone AND active = TRUE
+                ORDER BY created_at DESC
+            """),
+            {"phone": pid},
+        ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "commodity": r[1],
+            "target_price": float(r[2]),
+            "direction": r[3],
+            "market": r[4] if len(r) > 4 else None,
+            "created_at": r[5].isoformat() if len(r) > 5 and r[5] else None,
+        }
+        for r in rows
+    ]
+
+
+def get_open_disease_cases(phone: str) -> list[dict]:
+    pid = normalize_phone(phone)
+    with SessionLocal() as db:
+        rows = db.execute(
+            text("""
+                SELECT id, crop, disease, severity_level, severity_score, created_at
+                FROM disease_cases
+                WHERE phone = :phone AND status = 'open'
+                ORDER BY created_at DESC
+            """),
+            {"phone": pid},
+        ).fetchall()
+    return [
+        {
+            "id": str(r[0]),
+            "crop": r[1],
+            "disease": r[2],
+            "severity_level": r[3],
+            "severity_score": r[4],
+            "created_at": r[5].isoformat() if len(r) > 5 and r[5] else None,
+        }
+        for r in rows
+    ]
+
+
+def add_farmer_crop(phone: str, crop: str):
+    if not crop:
+        return
+    phone = normalize_phone(phone)
+    crop = crop.strip().lower()
+    farmer = get_farmer(phone)
+    crops = farmer.get("crops") or []
+    if isinstance(crops, list):
+        if crop not in [c.lower() for c in crops]:
+            crops.append(crop)
+            update_farmer_profile(phone, crops=crops)
+
+
 def record_detection_if_outbreak(phone: str, disease_result: dict) -> None:
-    """
-    Insert into detections when severity_score > 5 and disease spreads (per progression DB).
-    Requires farmers row for FK — ensured via get_farmer.
-    """
     if not disease_result or disease_result.get("error"):
         return
     sev = disease_result.get("severity_score")
@@ -35,7 +484,7 @@ def record_detection_if_outbreak(phone: str, disease_result: dict) -> None:
         return
 
     pid = normalize_phone(phone)
-    get_farmer(pid)  # ensure FK target exists
+    get_farmer(pid)
 
     disease_name = disease_result.get("disease") or "Unknown"
     crop_type = disease_result.get("crop") or "Unknown"
@@ -67,38 +516,12 @@ def record_detection_if_outbreak(phone: str, disease_result: dict) -> None:
 
     try:
         from scheduler import schedule_disease_followup_series
-
         schedule_disease_followup_series(pid, disease_name, crop_type)
     except Exception as e:
         print(f"[FarmerStore] schedule_disease_followup_series: {e}")
 
 
-def set_farmer_language(phone: str, language: str) -> None:
-    """Persist language on farmers row (upserts phone row if missing)."""
-    pid = normalize_phone(phone)
-    lang = (language or "").strip().lower()
-    if not lang:
-        return
-    with SessionLocal() as db:
-        db.execute(
-            text(
-                """
-                INSERT INTO farmers (phone, language, last_seen)
-                VALUES (:phone, :language, NOW())
-                ON CONFLICT (phone) DO UPDATE
-                SET language = EXCLUDED.language, last_seen = NOW()
-                """
-            ),
-            {"phone": pid, "language": lang},
-        )
-        db.commit()
-
-
 def save_farmer_diagnosis(phone: str, disease_result: dict, user_message: str) -> None:
-    """
-    Persist latest diseased-crop analysis on farmers (last_detection JSON + history).
-    Skips healthy / errors / missing disease.
-    """
     if not disease_result or disease_result.get("error"):
         return
     raw = (disease_result.get("raw_name") or "").lower()
@@ -147,70 +570,61 @@ def save_farmer_diagnosis(phone: str, disease_result: dict, user_message: str) -
     add_to_history(pid, issue, treatment)
 
 
-def get_farmer(phone: str) -> dict:
-    phone = normalize_phone(phone)
-    with SessionLocal() as db:
-        result = db.execute(
-            text(
-                "SELECT phone, name, crops, location, soil_type, history, messages, language "
-                "FROM farmers WHERE phone = :phone"
-            ),
-            {"phone": phone},
-        ).fetchone()
+# ── Disease Case Management Helpers ───────────────────────────────────────────
 
-        if not result:
-            db.execute(
-                text("INSERT INTO farmers (phone) VALUES (:phone) ON CONFLICT DO NOTHING"),
-                {"phone": phone},
-            )
-            db.commit()
-            result = db.execute(
-                text(
-                    "SELECT phone, name, crops, location, soil_type, history, messages, language "
-                    "FROM farmers WHERE phone = :phone"
-                ),
-                {"phone": phone},
-            ).fetchone()
-
-    return {
-        "phone":     result[0],
-        "name":      result[1] or "Kisan bhai",
-        "crops":     result[2] or [],
-        "location":  result[3] or "India",
-        "soil_type": result[4] or "unknown",
-        "history":   result[5] or [],
-        "messages":  result[6] or [],
-        "language":  result[7] if len(result) > 7 else None,
-    }
-
-
-def save_message(phone: str, user_msg: str, bot_msg: str):
-    """
-    Fixed: cast done in Python, not in SQL — avoids the :new_msgs::jsonb syntax error.
-    """
-    new_msgs = json.dumps([
-        {"role": "user",      "content": user_msg},
-        {"role": "assistant", "content": bot_msg},
-    ])
+def create_case(
+    phone: str,
+    crop: str,
+    disease: str,
+    confidence: float = None,
+    severity_level: str = None,
+    severity_score: int = None,
+    severity_source: str = "unknown",
+    lat: float = None,
+    lng: float = None,
+    spread_modes: list[str] = None,
+    image_url: str = None,
+) -> uuid.UUID:
+    pid = normalize_phone(phone)
+    case_id = uuid.uuid4()
     with SessionLocal() as db:
         db.execute(
             text("""
-                UPDATE farmers
-                SET
-                    messages  = COALESCE(messages, '[]'::jsonb) || cast(:new_msgs as jsonb),
-                    last_seen = NOW()
-                WHERE phone = :phone
+                INSERT INTO disease_cases (
+                    id, phone, crop, disease, status, confidence,
+                    severity_level, severity_score, severity_source,
+                    lat, lng, spread_modes, image_url, created_at
+                ) VALUES (
+                    :id, :phone, :crop, :disease, 'open', :confidence,
+                    :severity_level, :severity_score, :severity_source,
+                    :lat, :lng, :spread_modes, :image_url, NOW()
+                )
             """),
-            {"new_msgs": new_msgs, "phone": phone}
+            {
+                "id": case_id,
+                "phone": pid,
+                "crop": crop,
+                "disease": disease,
+                "confidence": confidence,
+                "severity_level": severity_level,
+                "severity_score": severity_score,
+                "severity_source": severity_source,
+                "lat": lat,
+                "lng": lng,
+                "spread_modes": spread_modes or [],
+                "image_url": image_url,
+            },
         )
         db.commit()
+    return case_id
 
 
-def update_farmer_profile(phone: str, **kwargs):
-    phone = normalize_phone(phone)
-    allowed = {"name", "crops", "location", "soil_type"}
-    fields, values = [], {"phone": phone}
-
+def update_case(case_id: uuid.UUID | str, **kwargs) -> None:
+    allowed = {
+        "status", "severity_level", "severity_score", "severity_source",
+        "last_followup_at", "next_followup_at", "followup_count", "resolved_at"
+    }
+    fields, values = [], {"id": str(case_id)}
     for key, val in kwargs.items():
         if key in allowed and val is not None:
             fields.append(f"{key} = :{key}")
@@ -221,179 +635,32 @@ def update_farmer_profile(phone: str, **kwargs):
 
     with SessionLocal() as db:
         db.execute(
-            text(f"UPDATE farmers SET {', '.join(fields)} WHERE phone = :phone"),
-            values
+            text(f"UPDATE disease_cases SET {', '.join(fields)} WHERE id = :id"),
+            values,
         )
         db.commit()
 
 
-def add_to_history(phone: str, issue: str, treatment: str):
-    phone = normalize_phone(phone)
-    event = json.dumps([{
-        "date":      str(date.today()),
-        "issue":     issue,
-        "treatment": treatment,
-    }])
-    with SessionLocal() as db:
-        db.execute(
-            text("""
-                UPDATE farmers
-                SET history = COALESCE(history, '[]'::jsonb) || cast(:event as jsonb)
-                WHERE phone = :phone
-            """),
-            {"event": event, "phone": phone}
-        )
-        db.commit()
-
-
-def _parse_last_detection_row(raw) -> dict:
-    """Support jsonb object, JSON string, or legacy 'bbox|severity' text."""
-    defaults = {"affected_pct": 20.0, "bbox_pct": 20.0, "severity": "unknown"}
-    if raw is None:
-        return dict(defaults)
-
-    if isinstance(raw, dict):
-        data = raw
-    elif isinstance(raw, str):
-        raw = raw.strip()
-        if "|" in raw and not raw.startswith("{"):
-            parts = raw.split("|", 1)
-            try:
-                pct = float(parts[0])
-            except ValueError:
-                pct = 20.0
-            sev = parts[1] if len(parts) > 1 else "unknown"
-            return {
-                "affected_pct": pct,
-                "bbox_pct": pct,
-                "severity": sev,
-            }
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return dict(defaults)
-    else:
-        return dict(defaults)
-
-    if not isinstance(data, dict):
-        return dict(defaults)
-
-    bbox = data.get("bbox_pct")
-    if bbox is None:
-        bbox = 20.0
-    try:
-        bbox = float(bbox)
-    except (TypeError, ValueError):
-        bbox = 20.0
-    sev = data.get("severity_level") or data.get("severity") or "unknown"
-    if isinstance(sev, dict):
-        sev = sev.get("level", "unknown")
-    return {
-        "affected_pct": bbox,
-        "bbox_pct": bbox,
-        "severity": str(sev),
-        "diagnosis": data,
-    }
-
-
-def get_last_detection(phone: str) -> dict:
-    """Last crop diagnosis: legacy pipe format or JSON from save_farmer_diagnosis."""
-    phone = normalize_phone(phone)
-    try:
-        with SessionLocal() as db:
-            result = db.execute(
-                text("SELECT last_detection FROM farmers WHERE phone = :phone"),
-                {"phone": phone},
-            ).fetchone()
-        if result and result[0] is not None:
-            return _parse_last_detection_row(result[0])
-    except Exception as e:
-        print(f"[FarmerStore] get_last_detection error: {e}")
-
-    return {
-        "affected_pct": 20.0,
-        "bbox_pct": 20.0,
-        "severity": "unknown",
-    }
-
-
-def get_farmer_location(phone: str) -> dict | None:
-    """Returns saved lat/lng or None if not set yet."""
-    phone = normalize_phone(phone)
-    with SessionLocal() as db:
-        result = db.execute(
-            text("SELECT lat, lng FROM farmers WHERE phone = :phone"),
-            {"phone": phone}
-        ).fetchone()
-    
-    if result and result[0] is not None and result[1] is not None:
-        return {"lat": result[0], "lng": result[1]}
-    return None
-
-
-def save_farmer_location(phone: str, lat: float, lng: float):
-    """Save farmer's home location permanently."""
-    phone = normalize_phone(phone)
-    with SessionLocal() as db:
-        db.execute(
-            text("""
-                INSERT INTO farmers (phone, lat, lng)
-                VALUES (:phone, :lat, :lng)
-                ON CONFLICT (phone) DO UPDATE
-                SET lat = :lat, lng = :lng, last_seen = NOW()
-            """),
-            {"phone": phone, "lat": lat, "lng": lng}
-        )
-        db.commit()
-    print(f"[FarmerStore] Saved location for {phone}: {lat}, {lng}")
-
-def save_price_alert(phone: str, commodity: str, target_price: float, direction: str):
-    with SessionLocal() as db:
-        db.execute(
-            text("""
-                INSERT INTO price_alerts (phone, commodity, target_price, direction)
-                VALUES (:phone, :commodity, :target_price, :direction)
-            """),
-            {"phone": phone, "commodity": commodity,
-             "target_price": target_price, "direction": direction}
-        )
-        db.commit()
-    print(f"[Alert] Saved: {phone} wants {commodity} {direction} Rs.{target_price}")
-
-
-def get_active_alerts() -> list:
+def due_followup_cases() -> list[dict]:
     with SessionLocal() as db:
         rows = db.execute(
             text("""
-                SELECT id, phone, commodity, target_price, direction
-                FROM price_alerts WHERE active = TRUE
+                SELECT id, phone, crop, disease, status, next_followup_at, followup_count
+                FROM disease_cases
+                WHERE status = 'open'
+                  AND next_followup_at IS NOT NULL
+                  AND next_followup_at <= NOW()
             """)
         ).fetchall()
     return [
-        {"id": r[0], "phone": r[1], "commodity": r[2],
-         "target_price": float(r[3]), "direction": r[4]}
+        {
+            "id": r[0],
+            "phone": r[1],
+            "crop": r[2],
+            "disease": r[3],
+            "status": r[4],
+            "next_followup_at": r[5],
+            "followup_count": r[6],
+        }
         for r in rows
     ]
-
-
-def deactivate_alert(alert_id: int):
-    with SessionLocal() as db:
-        db.execute(
-            text("UPDATE price_alerts SET active = FALSE WHERE id = :id"),
-            {"id": alert_id}
-        )
-        db.commit()
-
-
-def add_farmer_crop(phone: str, crop: str):
-    """Safely append crop to farmer's crop list if not already present."""
-    if not crop:
-        return
-    phone = normalize_phone(phone)
-    crop = crop.strip().lower()
-    farmer = get_farmer(phone)
-    crops = farmer.get("crops") or []
-    if isinstance(crops, list):
-        if crop not in [c.lower() for c in crops]:
-            crops.append(crop)
-            update_farmer_profile(phone, crops=crops)

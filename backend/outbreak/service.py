@@ -4,7 +4,7 @@ from groq import AsyncGroq
 import os
 from dotenv import load_dotenv
 load_dotenv()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+from config import GROQ_MODEL
 
 groq_client = AsyncGroq()  # uses GROQ_API_KEY from env
 
@@ -15,7 +15,8 @@ async def get_preventive_steps_ai(disease, crop):
             "role": "user",
             "content": f"Give exactly 4 short preventive steps for {disease} in {crop} crops. Return only a numbered list, no extra text."
         }],
-        max_tokens=150
+        max_tokens=800,
+        reasoning_effort="low",
     )
     text = response.choices[0].message.content.strip()
     steps = [line.lstrip("1234567890.). ").strip() for line in text.split("\n") if line.strip()]

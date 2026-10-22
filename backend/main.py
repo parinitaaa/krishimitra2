@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
+import os
 import asyncio
 
 load_dotenv()
@@ -20,12 +21,30 @@ from services.db import Base, engine
 from services.price_fetcher import run_daily_fetch
 from outbreak.routes import router as outbreak_router
 from outbreak.scheduler import check_new_detections
-import services.whatsapp_service as ws
 
 _executor = ThreadPoolExecutor(max_workers=1)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Check Groq models availability
+    try:
+        from groq import Groq
+        from config import GROQ_MODEL, GROQ_VISION_MODEL
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if groq_api_key:
+            g_client = Groq(api_key=groq_api_key)
+            available_models = [m.id for m in g_client.models.list().data]
+            if GROQ_MODEL not in available_models:
+                print(f"⚠️  [LOUD WARNING] Configured GROQ_MODEL '{GROQ_MODEL}' was NOT found in Groq's active models list! Available: {available_models}")
+            else:
+                print(f"✅ Groq model verified: {GROQ_MODEL}")
+            if GROQ_VISION_MODEL and GROQ_VISION_MODEL not in available_models:
+                print(f"⚠️  [LOUD WARNING] Configured GROQ_VISION_MODEL '{GROQ_VISION_MODEL}' was NOT found in Groq's active models list! Available: {available_models}")
+            elif GROQ_VISION_MODEL:
+                print(f"✅ Groq vision model verified: {GROQ_VISION_MODEL}")
+    except Exception as e:
+        print(f"⚠️  Failed to check Groq models at startup: {e}")
+
     # Create tables – wrapped in try/except so the app still starts if DB is down
     try:
         Base.metadata.create_all(bind=engine)

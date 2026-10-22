@@ -1,379 +1,291 @@
 # backend/agent/agent.py
-import os
-from groq import AsyncGroq
-from dotenv import load_dotenv
-from agent.tools import (
-    get_weather,
-    get_mandi_price,
-    get_treatment,
-    get_govt_schemes,
-    get_disease_progression,
-    get_nearby_mandis,
-)
-from services.location_state import _pending_location
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-# Fallback to backend/.env when running from project root.
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-from farmer_store import get_farmer_location, get_farmer_language, normalize_phone
-from services.market_service import extract_state_filter
-client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-
-memory_store = {}
-
-
-def get_history(farmer_id: str) -> list:
-    if farmer_id not in memory_store:
-        memory_store[farmer_id] = []
-    return memory_store[farmer_id]
-
-
-def save_message(farmer_id: str, role: str, content: str):
-    history = get_history(farmer_id)
-    history.append({"role": role, "content": content})
-    if len(history) > 10:
-        memory_store[farmer_id] = history[-10:]
-
-
-SYSTEM_PROMPT = """
-You are KrishiMitra, a friendly AI farming assistant for Indian farmers.
-
-IMPORTANT: Never mention tool names like get_treatment or get_nearby_mandis
-in your reply. Just use the data they return naturally in your response.
-
-When farmer sends crop photo with diagnosis:
-1. Tell disease name and severity clearly
-2. Give specific treatment with medicine names and dosage
-3. Warn how fast it spreads if untreated
-4. Give urgency level
-5. For chemical names, add a short line with example online search (Amazon.in / Ugaoo / local agri store) using the product name — do not invent fake URLs
-
-When farmer asks about prices:
-1. Give current rates
-2. Suggest nearest mandi to sell
-
-When farmer asks about schemes:
-1. List schemes with how to apply
-
-Rules:
-- Always reply in SAME language as farmer
-- Hindi → Hindi reply
-- English → English reply  
-- Keep replies SHORT and PRACTICAL
-- Never mention tool names in reply
--format the replays in clean way
-- Always end with: 'Koi aur madad chahiye? 🌾'
 """
+LangChain tool-calling agent for KrishiMitra.
+Uses ChatGroq with typed LangChain tools, dynamic per-turn context injection,
+stateful slot filling, chat_history persistence, and friendly localized fallbacks.
+"""
+
+from __future__ import annotations
+
+import os
+import json
+import logging
+from datetime import datetime
+from typing import Optional
+
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+
+from langchain_groq import ChatGroq
+from langchain_core.messages import (
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
+    ToolMessage,
+    BaseMessage,
+)
+
+from config import GROQ_MODEL
+from agent.tools import ALL_TOOLS, active_farmer_phone
+from farmer_store import (
+    get_farmer,
+    normalize_phone,
+    get_chat_history,
+    get_state,
+    set_state,
+    clear_state,
+    get_open_disease_cases,
+)
+from services.i18n import get_salutation
+
+logger = logging.getLogger(__name__)
+
+TOOL_MAP = {t.name: t for t in ALL_TOOLS}
+
+FALLBACK_MESSAGES = {
+    "hindi": "माफ़ कीजिये, अभी जानकारी प्राप्त करने में तकनीकी समस्या आ रही है। कृपया कुछ समय बाद पुनः प्रयास करें।",
+    "kannada": "ಕ್ಷಮಿಸಿ, ಮಾಹಿತಿಯನ್ನು ಪಡೆಯುವಲ್ಲಿ ತಾಂತ್ರಿಕ ಸಮಸ್ಯೆಯಾಗಿದೆ. ದಯವಿಟ್ಟು ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಮತ್ತೊಮ್ಮೆ ಪ್ರಯತ್ನಿಸಿ.",
+    "english": "I'm sorry, I encountered a temporary issue retrieving that information. Please try again in a moment.",
+}
+
+
+def _get_current_season() -> str:
+    month = datetime.now().month
+    if 6 <= month <= 10:
+        return "Kharif (Monsoon season - sowing/harvesting for rice, maize, cotton, pulses)"
+    elif month >= 11 or month <= 3:
+        return "Rabi (Winter season - sowing/harvesting for wheat, mustard, gram, potato)"
+    else:
+        return "Zaid (Summer season - vegetables, pulses, fodder)"
+
+
+def _build_system_prompt(farmer: dict) -> str:
+    name = farmer.get("name")
+    lang = (farmer.get("language") or "english").lower()
+    salutation = get_salutation(name, lang)
+    crops = farmer.get("crops") or []
+    crops_str = ", ".join(crops) if crops else "Not specified"
+    soil = farmer.get("soil_type") or "Not specified"
+    water = farmer.get("water_source") or "Not specified"
+    area = f"{farmer.get('farm_size_acres')} acres" if farmer.get('farm_size_acres') else "Not specified"
+    loc = farmer.get("location") or "Not specified"
+    district = farmer.get("district") or ""
+    state = farmer.get("state") or ""
+    region = f"{district}, {state}".strip(", ") or loc
+
+    # Open disease cases
+    phone = farmer.get("phone", "")
+    open_cases = get_open_disease_cases(phone) if phone else []
+    cases_summary = "None"
+    if open_cases:
+        cases_summary = "; ".join(
+            f"{c.get('crop')} {c.get('disease')} (Severity: {c.get('severity_level') or 'Unknown'})"
+            for c in open_cases[:3]
+        )
+
+    today_str = datetime.now().strftime("%A, %d %B %Y")
+    season_str = _get_current_season()
+
+    lang_instructions = {
+        "hindi": "Reply in Hindi using clean Devanagari script. Use respectful address like '{name} ji'.",
+        "kannada": "Reply in Kannada using clean Kannada script. Use respectful address like '{name} ಅವರೇ'.",
+        "english": "Reply in clear, warm Indian English. Address the farmer courteously.",
+    }.get(lang, "Reply in the farmer's preferred language.")
+
+    prompt = f"""You are KrishiMitra (कृषि-मित्र), an expert AI agronomy and farming advisor for Indian farmers.
+
+═══ FARMER PROFILE & CONTEXT ═══
+• Name: {name or 'Farmer Friend'} (Respectful address: {salutation})
+• Registered Language: {lang.upper()} ({lang_instructions})
+• Farm Location: {region}
+• Cultivated Crops: {crops_str}
+• Soil Type: {soil}
+• Irrigation / Water Source: {water}
+• Farm Size: {area}
+• Open Crop Disease Cases: {cases_summary}
+• Today's Date: {today_str}
+• Agricultural Season: {season_str}
+
+═══ CORE OPERATIONAL RULES ═══
+1. STRICT LANGUAGE MATCH: You MUST reply in the farmer's registered language ({lang.upper()}).
+   - Hindi: pure Devanagari script (no English transliteration).
+   - Kannada: pure Kannada script.
+   - English: clear English.
+2. NATURAL & PRACTICAL: Keep answers concise, highly practical, and tailored to Indian farming conditions.
+3. NEVER REVEAL INTERNAL TOOL NAMES: Never mention tools like 'get_weather', 'predict_price', 'find_best_market', etc. Present the information naturally as your direct knowledge.
+4. ONE QUESTION AT A TIME: When asking for clarification or missing information (e.g. crop name or location), ask exactly ONE clear question.
+5. AMBIGUOUS CROP HANDLING: If the farmer asks a crop-specific question (e.g. price, advice) without specifying the crop and has multiple crops registered ({crops_str}), gently ask which one they are inquiring about.
+6. HONESTY: If market price or data is unavailable for a crop, state honestly that current live price data is not available. Never invent fake prices.
+7. NO FORCED CLOSING PHRASES: Do NOT append repetitive boilerplate lines like 'Koi aur madad chahiye? 🌾' at the end of every message. Conclude replies naturally.
+8. RESPECTFUL ADDRESS: Occasionally address the farmer by their respectful name ({salutation}).
+"""
+    return prompt
+
+
+def _get_history_messages(farmer_id: str) -> list[BaseMessage]:
+    raw_history = get_chat_history(farmer_id, limit=10)
+    messages: list[BaseMessage] = []
+    for h in raw_history:
+        role = h.get("role")
+        content = h.get("content") or ""
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            messages.append(AIMessage(content=content))
+    return messages
 
 
 async def process_message(
-    farmer_id: str, message: str, disease_result: dict = None
+    farmer_id: str,
+    message: str,
+    disease_result: dict = None,
+    client: Optional[ChatGroq] = None,
 ) -> str:
+    """
+    Main entry point for processing incoming farmer messages.
+    Executes LangChain tool-calling agent with Groq.
+    """
+    clean_phone = normalize_phone(farmer_id)
+    token = active_farmer_phone.set(clean_phone)
+
+    farmer = get_farmer(clean_phone)
+    lang = (farmer.get("language") or "english").lower()
+
     try:
+        # ── 1. Check for active slot filling from previous turn ────────────────
+        pending_state = get_state(clean_phone)
+        resume_tool_call = None
+        if pending_state and pending_state.get("flow") == "slot_filling":
+            data = pending_state.get("data") or {}
+            tool_name = data.get("tool")
+            missing_field = data.get("missing")
+            partial_args = data.get("args") or {}
+            if tool_name in TOOL_MAP and missing_field:
+                # Fill slot with user's current reply
+                partial_args[missing_field] = message.strip()
+                resume_tool_call = (tool_name, partial_args)
+                clear_state(clean_phone)
+
+        # ── 2. Format incoming message with diagnosis context if present ──────
+        effective_message = message
         if disease_result and not disease_result.get("error"):
             disease = disease_result.get("disease", "")
             conf = disease_result.get("confidence", "")
             severity = disease_result.get("severity", {})
             urgency = disease_result.get("urgency", "")
             prog = disease_result.get("progression", {})
-
-            context = (
-                f"CROP PHOTO ANALYSIS RESULT:\n"
-                f"Disease   : {disease}\n"
+            diag_ctx = (
+                f"[PHOTO DIAGNOSIS RESULT]\n"
+                f"Disease: {disease}\n"
                 f"Confidence: {conf}\n"
-                f"Severity  : {severity.get('level', 'Unknown')} — {severity.get('description', '')}\n"
-                f"Urgency   : {urgency}\n"
+                f"Severity: {severity.get('level', 'Unknown')} ({severity.get('description', '')})\n"
+                f"Urgency: {urgency}\n"
             )
             if prog:
-                context += (
-                    f"If untreated: {prog.get('day_7_spread', '?')} crop affected in 7 days\n"
+                diag_ctx += (
+                    f"Spread risk: {prog.get('day_7_spread', '?')} in 7 days\n"
                     f"Warning: {prog.get('warning', '')}\n"
                 )
-            message = f"{context}\nFarmer message: {message or 'Please help me'}"
+            effective_message = f"{diag_ctx}\nFarmer inquiry: {message or 'Please examine this leaf photo and guide me.'}"
 
-        history = get_history(farmer_id)
-        system_prompt = SYSTEM_PROMPT
-        pref = get_farmer_language(normalize_phone(farmer_id))
-        if pref:
-            lang_names = {"hindi": "Hindi", "kannada": "Kannada", "english": "English"}
-            system_prompt += (
-                f"\n\nFarmer registered language preference: {lang_names.get(pref, pref)}. "
-                "Reply in this language."
-            )
-        messages = (
-            [{"role": "system", "content": system_prompt}]
-            + history
-            + [{"role": "user", "content": message}]
-        )
+        # ── 3. Build Conversation Messages ─────────────────────────────────────
+        system_prompt = _build_system_prompt(farmer)
+        messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
+        messages.extend(_get_history_messages(clean_phone))
+        messages.append(HumanMessage(content=effective_message))
 
-        tool_result = await use_tools(message, disease_result, farmer_id)
-
-        # Sentinel: location needed
-        if tool_result == "__LOCATION_REQUESTED__":
-            msg_lower = message.lower()
-            explicit_crop = None
-            for c in ["tomato","potato","onion","wheat","rice","cotton","corn","grape","pepper","mango","banana"]:
-                if c in msg_lower:
-                    explicit_crop = c
-                    break
-            crop_str = f"*{explicit_crop}*" if explicit_crop else "mandis"
-            return (
-                f"Aapki location save karni hai taaki agle baar seedha jawab de sakoon!\n"
-                f"Please apni *WhatsApp location share karein* 📍\n\n"
-                f"(Attachment > Location > Send Current Location)\n\n"
-                f"Koi aur madad chahiye? 🌾"
+        # ── 4. Initialize LLM & Tool Binding ──────────────────────────────────
+        if client is None:
+            client = ChatGroq(
+                model_name=GROQ_MODEL,
+                groq_api_key=os.getenv("GROQ_API_KEY"),
+                temperature=0.2,
+                max_tokens=800,
             )
 
-        # Sentinel: mandi result already computed
-        if tool_result and tool_result.startswith("__DIRECT_REPLY__"):
-            return tool_result.replace("__DIRECT_REPLY__", "", 1)
+        llm_with_tools = client.bind_tools(ALL_TOOLS)
 
-        # Normal LLM flow
-        if tool_result:
-            messages.append({"role": "user", "content": f"Additional data:\n{tool_result}"})
+        # If resuming a filled slot directly, execute the tool
+        if resume_tool_call:
+            t_name, t_args = resume_tool_call
+            tool_obj = TOOL_MAP[t_name]
+            try:
+                tool_output = tool_obj.invoke(t_args)
+            except Exception as e:
+                tool_output = {"error": str(e)}
 
-        response = await client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=600,
-        )
+            # Fake assistant tool call & tool result in messages
+            call_id = f"call_resumed_{int(datetime.now().timestamp())}"
+            messages.append(
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": t_name, "args": t_args, "id": call_id}],
+                )
+            )
+            messages.append(
+                ToolMessage(
+                    content=json.dumps(tool_output, ensure_ascii=False),
+                    tool_call_id=call_id,
+                )
+            )
 
-        reply = response.choices[0].message.content
-        save_message(farmer_id, "user", message)
-        save_message(farmer_id, "assistant", reply)
-        return reply
+            # Let LLM synthesize final reply
+            final_res = await client.ainvoke(messages)
+            return final_res.content
+
+        # ── 5. Standard Turn Execution ────────────────────────────────────────
+        response = await llm_with_tools.ainvoke(messages)
+
+        # If LLM requests tool execution
+        if response.tool_calls:
+            messages.append(response)
+            for tool_call in response.tool_calls:
+                name = tool_call["name"]
+                args = tool_call["args"]
+                call_id = tool_call["id"]
+                tool_obj = TOOL_MAP.get(name)
+
+                if not tool_obj:
+                    output = {"error": f"Tool '{name}' is not registered."}
+                else:
+                    try:
+                        output = tool_obj.invoke(args)
+                    except Exception as e:
+                        output = {"error": f"Tool execution failed: {str(e)}"}
+
+                # Check if tool reported missing input for slot-filling
+                if isinstance(output, dict) and output.get("missing"):
+                    missing_list = output["missing"]
+                    if missing_list:
+                        first_missing = missing_list[0]
+                        set_state(
+                            clean_phone,
+                            flow="slot_filling",
+                            step="awaiting_input",
+                            data={
+                                "tool": name,
+                                "args": args,
+                                "missing": first_missing,
+                            },
+                        )
+
+                messages.append(
+                    ToolMessage(
+                        content=json.dumps(output, ensure_ascii=False),
+                        tool_call_id=call_id,
+                    )
+                )
+
+            # Second turn to generate final message based on tool outputs
+            final_response = await client.ainvoke(messages)
+            return final_response.content
+
+        return response.content
 
     except Exception as e:
-        return f"Sorry, please try again. Error: {str(e)}"
+        logger.exception(f"[Agent] process_message failure for {clean_phone}: {e}")
+        return FALLBACK_MESSAGES.get(lang, FALLBACK_MESSAGES["english"])
 
-
-# Pass farmer_id into use_tools
-async def use_tools(message: str, disease_result: dict = None, farmer_id: str = None) -> str:
-    msg_lower = message.lower()
-    results = []
-
-    # Auto-use treatment tool if disease detected
-    if disease_result and not disease_result.get("error"):
-        disease = disease_result.get("disease", "")
-        if disease and disease != "Could not analyze":
-            results.append(get_treatment.run(disease))
-            results.append(get_disease_progression.run(disease))
-
-    # Weather tool
-    if any(w in msg_lower for w in ["weather", "rain", "spray", "mausam", "barish", "humid"]):
-        location = extract_location(message)
-        results.append(get_weather.run(location))
-
-    # ── NEW: Price alert subscription ─────────────────────────────────────────
-    # Only fires if message has BOTH a crop AND alert-intent words AND a number
-    # Does NOT interfere with "tomato price?" or "mandi" queries
-    alert_match = _parse_price_alert(msg_lower)
-    if alert_match:
-        from farmer_store import save_price_alert
-        save_price_alert(
-            phone=farmer_id,
-            commodity=alert_match["commodity"],
-            target_price=alert_match["price"],
-            direction=alert_match["direction"],
-        )
-        return (
-            f"__DIRECT_REPLY__✅ Alert set!\n\n"
-            f"Jab *{alert_match['commodity'].title()}* ka bhav "
-            f"Rs.*{alert_match['price']}*/quintal se "
-            f"{'upar' if alert_match['direction'] == 'above' else 'neeche'} "
-            f"jayega, main aapko turant bata dunga! 🔔\n\n"
-            f"Koi aur madad chahiye? 🌾"
-        )
-
-    # ── NEW: Price prediction ─────────────────────────────────────────────────
-    # Only fires on explicit prediction words — won't trigger on "tomato price?"
-    if any(w in msg_lower for w in ["predict", "forecast", "rise", "fall",
-                                     "badhega", "ghategaa", "trend", "future"]):
-        crop = _extract_crop_explicit(msg_lower)
-        if crop:
-            return await _get_price_prediction(crop, farmer_id)
-
-    # Price tool — keep this separate from nearby
-    if any(w in msg_lower for w in ["price", "rate", "bhav"]):
-        crop = extract_crop(message)
-        state_f = extract_state_filter(message)
-        if state_f:
-            from services.db import SessionLocal
-            from services.market_service import get_latest_prices
-
-            db = SessionLocal()
-            try:
-                rows = get_latest_prices(crop, state_f, db)
-            finally:
-                db.close()
-            if rows:
-                lines = f"*{state_f}* — *{crop.title()}* bhav:\n\n"
-                for r in rows[:5]:
-                    lines += f"• {r['market']}: Rs.{r['modal_price']}/q\n"
-                return (
-                    f"__DIRECT_REPLY__{lines}\n"
-                    f"Koi aur madad chahiye? 🌾"
-                )
-        results.append(get_mandi_price.run(crop))
-
-    # Nearby mandi block — replace entirely
-    if any(w in msg_lower for w in ["nearby", "nearest", "closest", "paas", "kahan", "mandi", "sell", "market"]):
-        explicit_crop = None
-        for c in ["tomato","potato","onion","wheat","rice","cotton","corn","grape","pepper","mango","banana"]:
-            if c in msg_lower:
-                explicit_crop = c
-                break
-
-        state_f = extract_state_filter(message)
-        saved = get_farmer_location(farmer_id)
-        if saved:
-            from services.whatsapp_service import handle_location_for_mandi
-            mandi_reply = await handle_location_for_mandi(
-                phone=farmer_id,
-                lat=saved["lat"],
-                lng=saved["lng"],
-                commodity=explicit_crop,
-                state_filter=state_f,
-            )
-            return f"__DIRECT_REPLY__{mandi_reply}"  # ← inside if saved
-
-        # No saved location — ask for it
-        _pending_location[farmer_id] = {
-            "waiting": "mandi",
-            "commodity": explicit_crop,
-            "state_filter": state_f,
-        }
-        return "__LOCATION_REQUESTED__"
-
-    # Schemes
-    if any(w in msg_lower for w in ["scheme", "subsidy", "insurance", "yojana", "sarkar"]):
-        results.append(get_govt_schemes.run("India"))
-
-    return "\n\n".join(results) if results else ""
-
-
-def extract_location(message: str) -> str:
-    cities = [
-        "pune",
-        "mumbai",
-        "delhi",
-        "bangalore",
-        "bengaluru",
-        "hyderabad",
-        "nashik",
-        "nagpur",
-        "chennai",
-        "kolkata",
-        "ahmedabad",
-        "jaipur",
-        "lucknow",
-        "patna",
-        "bhopal",
-        "indore",
-        "chandigarh",
-        "ludhiana",
-        "amritsar",
-        "kochi",
-    ]
-    msg_lower = message.lower()
-    for city in cities:
-        if city in msg_lower:
-            return city.capitalize()
-    return "Pune"
-
-
-def extract_crop(message: str) -> str:
-    crops = [
-        "tomato",
-        "potato",
-        "onion",
-        "wheat",
-        "rice",
-        "cotton",
-        "corn",
-        "grape",
-        "pepper",
-        "mango",
-        "banana",
-    ]
-    msg_lower = message.lower()
-    for crop in crops:
-        if crop in msg_lower:
-            return crop
-    return "tomato"
-
-import re
-
-def _extract_crop_explicit(msg_lower: str) -> str | None:
-    """Returns crop only if explicitly mentioned. Never defaults."""
-    for c in ["tomato","potato","onion","wheat","rice","cotton",
-              "corn","grape","pepper","mango","banana"]:
-        if c in msg_lower:
-            return c
-    return None
-
-
-def _parse_price_alert(msg_lower: str) -> dict | None:
-    """
-    Returns alert dict only if ALL three are present:
-    1. a crop name
-    2. an alert-intent word (alert/notify/bata/crosses)
-    3. a number (the target price)
-    
-    "tomato price?" → None  (no alert word, no number)
-    "nearby mandi"  → None  (no alert word, no number)
-    "alert when onion crosses 2000" → {"commodity":"onion","price":2000,"direction":"above"}
-    """
-    crop = _extract_crop_explicit(msg_lower)
-    if not crop:
-        return None
-
-    alert_words = ["alert", "notify", "bata", "inform", "crosses",
-                   "upar ho", "neeche ho", "jab"]
-    if not any(w in msg_lower for w in alert_words):
-        return None
-
-    numbers = re.findall(r'\d+(?:\.\d+)?', msg_lower)
-    if not numbers:
-        return None
-
-    price     = float(numbers[0])
-    direction = "below" if any(w in msg_lower for w in
-                               ["below", "neeche", "less", "gire", "ghate"]) else "above"
-    return {"commodity": crop, "price": price, "direction": direction}
-
-
-async def _get_price_prediction(crop: str, farmer_id: str) -> str:
-    from services.prediction_service import predict_prices
-    from services.db import SessionLocal
-    from services.market_service import find_best_mandi_for_commodity
-
-    db = SessionLocal()
-    try:
-        saved  = get_farmer_location(farmer_id)
-        market = "General"
-        if saved:
-            mandis = find_best_mandi_for_commodity(
-                saved["lat"], saved["lng"], crop, 500, 1, db
-            )
-            if mandis:
-                market = mandis[0]["market"]
-
-        pred = predict_prices(crop, market, db)
     finally:
-        db.close()
-
-    if pred.get("error"):
-        return f"__DIRECT_REPLY__{pred['error']}\n\nKoi aur madad chahiye? 🌾"
-
-    trend_emoji = {"rising": "📈", "falling": "📉", "stable": "➡️"}.get(pred["trend"], "")
-
-    return (
-        f"__DIRECT_REPLY__{trend_emoji} *{crop.title()} Price Forecast*\n\n"
-        f"Aaj ka bhav  : Rs.*{pred['current_price']}*/quintal\n"
-        f"7 din baad   : Rs.*{pred['day_7_price']}*/quintal\n"
-        f"Badlaav      : {'+' if pred['change_pct'] > 0 else ''}{pred['change_pct']}%\n\n"
-        f"*Salah:* {pred['advice']}\n\n"
-        f"Koi aur madad chahiye? 🌾"
-    )
+        active_farmer_phone.reset(token)

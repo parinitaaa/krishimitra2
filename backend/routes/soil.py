@@ -43,6 +43,15 @@ async def soil_deficiency(
         else:
             media_type = "image/jpeg"
 
+        from config import GROQ_VISION_MODEL
+        if not GROQ_VISION_MODEL:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "GROQ_VISION_MODEL is not configured. The previous model 'meta-llama/llama-4-scout-17b-16e-instruct' has been decommissioned by Groq. Please configure an active vision model in your environment."
+                }
+            )
+
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             raise EnvironmentError("GROQ_API_KEY not set in .env")
@@ -83,7 +92,7 @@ Return ONLY valid JSON, no markdown, no explanation:
 If no deficiency symptoms are visible, return deficiencies_detected as false and identified as empty array.
 """
         response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model=GROQ_VISION_MODEL,
             messages=[{
                 "role": "user",
                 "content": [

@@ -3,7 +3,7 @@ from pathlib import Path
 from groq import Groq
 from dotenv import load_dotenv
 load_dotenv()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+from config import GROQ_MODEL
 _DB_PATH = Path(__file__).parent.parent / "data" / "disease_db.json"
 with open(_DB_PATH) as f:
     DISEASE_DB = json.load(f)
@@ -54,11 +54,14 @@ Return ONLY valid JSON, no markdown, no explanation:
         model=GROQ_MODEL,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=900,
+        reasoning_effort="low",
     )
-    raw = response.choices[0].message.content.strip()
+    raw = (response.choices[0].message.content or "").strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        parsed = {}
     parsed.setdefault("remedies", {})
     parsed["remedies"].setdefault("organic", [])
     parsed["remedies"].setdefault("chemical", [])

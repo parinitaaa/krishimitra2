@@ -27,8 +27,8 @@ async def morning_briefing():
 
     for farmer in farmers:
         try:
-            name     = farmer.get("name", "Kisan bhai")
-            location = farmer.get("location", "India")
+            name     = farmer.get("name")
+            location = farmer.get("location")
             crops    = farmer.get("crops", [])
 
             price_line = ""
@@ -36,7 +36,7 @@ async def morning_briefing():
                 crop = crops[0]
                 db = SessionLocal()
                 try:
-                    prices = get_latest_prices(crop, location, db)
+                    prices = get_latest_prices(crop, location or "", db)
                 finally:
                     db.close()
                 if prices:
@@ -45,9 +45,11 @@ async def morning_briefing():
                 else:
                     price_line = f"Aaj {crop} ka bhav fetch ho raha hai."
 
+            salutation = f"Subah ki salaam, {name}!" if name else "Subah ki salaam!"
+            loc_str = f"Aaj {location} mein" if location else "Aaj aapke kshetra mein"
             msg = (
-                f"Subah ki salaam {name} bhai! 🌾\n"
-                f"Aaj {location} mein mausam: theek hai, kaam karne ka accha din.\n"
+                f"{salutation} 🌾\n"
+                f"{loc_str} mausam: theek hai, kaam karne ka accha din.\n"
                 f"{price_line}\n"
                 f"Koi bhi sawaal ho — bas photo ya message bhejein!"
             )
@@ -190,7 +192,8 @@ async def send_disease_followup_round(
     tz = ZoneInfo("Asia/Kolkata")
     pid = normalize_phone(phone)
     prof = get_farmer(pid)
-    name = (prof.get("name") or "Kisan bhai").split()[0]
+    name_val = prof.get("name")
+    name = name_val.split()[0] if name_val else "Kisan"
 
     mild = _organic_mild_lines(disease_name)
     links = _buy_links(disease_name)
@@ -226,8 +229,7 @@ async def send_disease_followup_round(
         f"Agar theek ho gayi ho to bataiye; warna *nayi photo* bhejein 📸\n\n"
         f"*Halka / dekhbhal:*\n{mild}"
         f"{mandi_line}\n"
-        f"{links}\n\n"
-        f"Koi aur madad chahiye? 🌾"
+        f"{links}"
     )
     await send_proactive_message(pid, msg)
     print(f"[Scheduler] Disease follow-up r{round_idx} → {pid}")
@@ -272,9 +274,9 @@ def _get_all_farmers() -> list:
     return [
         {
             "phone":    row[0],
-            "name":     row[1] or "Kisan bhai",
+            "name":     row[1] if row[1] else None,
             "crops":    row[2] or [],
-            "location": row[3] or "India",
+            "location": row[3] if row[3] else None,
         }
         for row in rows
     ]

@@ -1,21 +1,22 @@
-# Shared onboarding flags (no imports from agent/whatsapp).
+# services/profile_state.py
+# DB-backed shim for pending name state using conversation_state table.
 
-_pending_name: dict[str, bool] = {}
+from farmer_store import get_state, set_state, clear_state, normalize_phone
 
 
 def mark_pending_name(phone: str) -> None:
-    from farmer_store import normalize_phone
-
-    _pending_name[normalize_phone(phone)] = True
+    pid = normalize_phone(phone)
+    set_state(pid, flow="onboarding", step="ask_name")
 
 
 def clear_pending_name(phone: str) -> None:
-    from farmer_store import normalize_phone
-
-    _pending_name.pop(normalize_phone(phone), None)
+    pid = normalize_phone(phone)
+    st = get_state(pid)
+    if st and st.get("flow") == "onboarding" and st.get("step") == "ask_name":
+        clear_state(pid)
 
 
 def is_pending_name(phone: str) -> bool:
-    from farmer_store import normalize_phone
-
-    return _pending_name.get(normalize_phone(phone), False)
+    pid = normalize_phone(phone)
+    st = get_state(pid)
+    return bool(st and st.get("flow") == "onboarding" and st.get("step") == "ask_name")

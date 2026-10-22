@@ -2,12 +2,6 @@ import asyncio
 from services.db import SessionLocal
 from outbreak.service import handle_new_detection
 from sqlalchemy import text
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-scheduler = AsyncIOScheduler()
-
-def start_scheduler():
-    scheduler.start()
 
 def _fetch_unprocessed_outbreaks():
     with SessionLocal() as db:
