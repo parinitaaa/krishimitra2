@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
 pillow
 sqlalchemy
@@ -14,3 +14,6 @@ asyncpg
 beautifulsoup4
 groq
 onnxruntime
+ultralytics
+python-dotenv
+psycopg

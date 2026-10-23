@@ -94,7 +94,7 @@ def get_weather(location: Optional[str] = None) -> dict:
         return {"location": loc, "error": f"Failed to retrieve weather: {str(e)}"}
 
 
-# ── 2. Mandi Price Tool (No Mock Fallback) ────────────────────────────────────
+# ── 2. Mandi Price Tool (uses teammate's fetcher; no mock fallback) ───────────
 
 class MandiPriceInput(BaseModel):
     crop: str = Field(description="Name of the agricultural commodity or crop, e.g. tomato, potato, onion, wheat")
@@ -103,7 +103,7 @@ class MandiPriceInput(BaseModel):
 
 @tool("get_mandi_price", args_schema=MandiPriceInput)
 def get_mandi_price(crop: str, state: Optional[str] = None) -> dict:
-    """Get live market/mandi prices for a crop. If no real data is found, returns error: no_data honestly."""
+    """Get current mandi prices for a crop. Returns error: no_data if nothing real is found."""
     if not crop or not crop.strip():
         return {"missing": ["crop"]}
 
@@ -113,18 +113,28 @@ def get_mandi_price(crop: str, state: Optional[str] = None) -> dict:
         f = _get_active_farmer_profile()
         target_state = f.get("state")
 
-    # 1. First check local database cache
     try:
         from services.db import SessionLocal
-        from services.market_service import get_latest_prices
+        from services.price_fetcher import ensure_commodity_prices_fresh
+        from services.market_service import get_latest_prices, get_all_latest_prices
 
         with SessionLocal() as db:
-            rows = get_latest_prices(clean_crop, target_state, db)
+            try:
+                # Fetches from the API / Karnataka scraper if today's data is missing
+                ensure_commodity_prices_fresh(clean_crop, db)
+            except Exception as e:
+                print(f"[get_mandi_price] fresh-fetch failed for {clean_crop}: {e}")
+
+            if target_state:
+                rows = get_latest_prices(clean_crop, target_state, db)
+            else:
+                rows = get_all_latest_prices(clean_crop, db)
+
             if rows:
                 return {
                     "crop": clean_crop,
                     "state": target_state,
-                    "source": "database_cache",
+                    "source": "mandi_database",
                     "prices": [
                         {
                             "market": r.get("market"),
@@ -133,58 +143,20 @@ def get_mandi_price(crop: str, state: Optional[str] = None) -> dict:
                             "modal_price": r.get("modal_price"),
                             "min_price": r.get("min_price"),
                             "max_price": r.get("max_price"),
-                            "date": str(r.get("date", "")),
+                            "date": str(r.get("arrival_date")),
                         }
                         for r in rows[:5]
                     ],
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[get_mandi_price] error for {clean_crop}: {e}")
 
-    # 2. Query Agmarknet API if key is available
-    key = os.getenv("AGMARKNET_API_KEY")
-    if key:
-        try:
-            params = {
-                "api-key": key,
-                "format": "json",
-                "limit": 5,
-                "filters[Commodity]": clean_crop.capitalize(),
-            }
-            if target_state:
-                params["filters[State]"] = target_state.title()
-
-            res = requests.get(
-                "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070",
-                params=params,
-                timeout=6,
-            )
-            records = res.json().get("records", [])
-            if records:
-                return {
-                    "crop": clean_crop,
-                    "state": target_state,
-                    "source": "agmarknet_live",
-                    "prices": [
-                        {
-                            "market": r.get("Market"),
-                            "state": r.get("State"),
-                            "modal_price": r.get("Modal Price"),
-                            "min_price": r.get("Min Price"),
-                            "max_price": r.get("Max Price"),
-                        }
-                        for r in records[:5]
-                    ],
-                }
-        except Exception:
-            pass
-
-    # 3. No real data exists: return no_data honestly (DO NOT mock)
+    # No real data: say so honestly (never invent a price)
     return {
         "error": "no_data",
         "crop": clean_crop,
         "state": target_state,
-        "message": f"No current live mandi prices found for {clean_crop}.",
+        "message": f"No current mandi prices found for {clean_crop}.",
     }
 
 

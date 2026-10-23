@@ -13,7 +13,7 @@ from services.market_service import (
 )
 from services.prediction_service import predict_prices
 from services.geocode_service import geocode_location
-from services.price_fetcher import run_daily_fetch
+from services.price_fetcher import run_daily_fetch, ensure_commodity_prices_fresh
 
 router = APIRouter()
 
@@ -25,6 +25,9 @@ async def live_prices(
     db: Session = Depends(get_db),
 ):
     try:
+        # Check if today's price is already in DB; if not, fetch via API/fallback and upsert
+        ensure_commodity_prices_fresh(commodity, db)
+
         if state:
             prices = get_latest_prices(commodity, state, db)
         else:
