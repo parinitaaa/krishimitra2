@@ -16,7 +16,8 @@ class TestModelNames(unittest.TestCase):
         # Convert keys to int
         snapshot_names = {int(k): v for k, v in snapshot_names.items()}
 
-        model_path = backend_dir / "best1.pt"
+        from config import MODEL_PATH
+        model_path = Path(MODEL_PATH) if Path(MODEL_PATH).is_absolute() else backend_dir / MODEL_PATH
         self.assertTrue(model_path.exists(), f"Model not found at {model_path}")
 
         model = YOLO(str(model_path))

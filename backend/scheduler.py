@@ -282,32 +282,45 @@ def _get_all_farmers() -> list:
     ]
 
 
-def start_scheduler():
-    """Register all jobs then start. Call this from main.py startup."""
-    if scheduler.running:
-        return
-
-    scheduler.add_job(
+def register_jobs(sched):
+    """Registers morning briefing, daily karnataka scrape, and price alerts jobs."""
+    sched.add_job(
         morning_briefing,
         trigger="cron",
         hour=7, minute=0,
         id="morning_briefing_job",
         replace_existing=True,
     )
-    scheduler.add_job(
+    sched.add_job(
         daily_karnataka_scrape,
         trigger="cron",
         hour=10, minute=20,
         id="daily_karnataka_scrape",
         replace_existing=True,
     )
-    scheduler.add_job(
+    sched.add_job(
         check_price_alerts,
         "cron", minute=0,       # every hour at :00
         id="price_alerts_job",
         replace_existing=True,
     )
-    scheduler.start()
+
+
+def register_daily_price_fetch(sched):
+    """Registers daily mandi price fetch in executor."""
+    from services.price_fetcher import run_daily_fetch
+    loop = asyncio.get_event_loop()
+    sched.add_job(
+        lambda: loop.run_in_executor(_executor, run_daily_fetch),
+        trigger="cron", hour=0, minute=0,
+        id="daily_price_fetch", replace_existing=True,
+    )
+
+
+def start_scheduler():
+    """Start scheduler and log registered jobs."""
+    if not scheduler.running:
+        scheduler.start()
 
     print("[Scheduler] Started. Registered jobs:")
     for job in scheduler.get_jobs():

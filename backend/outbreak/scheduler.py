@@ -28,4 +28,15 @@ async def check_new_detections():
         for row in result:
             print("🔥 Outbreak detected:", row["disease_name"])
             await handle_new_detection(db, dict(row))
-            await asyncio.to_thread(_mark_detection_processed, row["id"])
+            await asyncio.to_thread(_mark_detection_processed, row["id"])
+
+
+def register_jobs(sched):
+    """Registers outbreak monitoring jobs with the application scheduler."""
+    sched.add_job(
+        check_new_detections,
+        trigger="interval",
+        seconds=100,
+        id="outbreak_monitor",
+        replace_existing=True,
+    )

@@ -15,7 +15,7 @@ Business logic belongs in services/. routes/*.py and WhatsApp both call services
 Supabase tables: farmers (phone PK, name, language, lat, lng, location text, state, district, crops text[], soil_type, water_source, onboarding_step, proactive_opt_in), price_alerts, mandi_prices, detections (legacy), conversation_state, chat_history, processed_messages, disease_cases, case_updates, outbreak_alerts_sent. Only ALTER ... ADD COLUMN IF NOT EXISTS; never drop or recreate tables. Phone numbers are normalized E.164 without "whatsapp:".
 
 ## Disease model reality
-- New best.pt (once swapped in): YOLOv8 detect, imgsz 640, 29 classes = 18 diseases + 11 healthy-leaf classes (apple, bell pepper, blueberry, cherry, corn, grape, peach, potato, raspberry, soybean, squash, strawberry, tomato). Blueberry, cherry, peach, raspberry, soybean and strawberry have a healthy class only, no disease classes.
+- New best.pt (in use): YOLOv8 detect, imgsz 640, 29 classes = 18 diseases + 11 healthy-leaf classes (apple, bell pepper, blueberry, cherry, corn, grape, peach, potato, raspberry, soybean, squash, strawberry, tomato). Blueberry, cherry, peach, raspberry, soybean and strawberry have a healthy class only, no disease classes.
 - The old classifier.onnx covers only 15 PlantVillage classes (pepper, potato, tomato). Class names come from model metadata / class_names.json, never a hardcoded list.
 - Boxes may cover whole leaves, not lesions. Severity is never presented as measured unless validated; the farmer's report is the primary severity input.
 - "Healthy" wording is "I don't see signs of the diseases I can recognize", never certainty. Unsupported crops get an honest message plus general advice clearly labelled as general.

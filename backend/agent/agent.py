@@ -202,6 +202,7 @@ async def process_message(
                 groq_api_key=os.getenv("GROQ_API_KEY"),
                 temperature=0.2,
                 max_tokens=800,
+                reasoning_effort="low",
             )
 
         llm_with_tools = client.bind_tools(ALL_TOOLS)

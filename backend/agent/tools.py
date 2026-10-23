@@ -416,6 +416,15 @@ def create_price_alert(
     if not phone:
         return {"error": "no_active_farmer", "message": "No active farmer session found."}
 
+    farmer = _get_active_farmer_profile()
+    f_lat = farmer.get("lat")
+    f_lng = farmer.get("lng")
+    if f_lat is None or f_lng is None:
+        return {
+            "missing": ["location"],
+            "message": "Farmer location (latitude/longitude) is needed to check alerts at nearby mandis. Please share your location.",
+        }
+
     dir_clean = "below" if direction.lower() in ("below", "neeche", "less", "under") else "above"
     from farmer_store import save_price_alert
 

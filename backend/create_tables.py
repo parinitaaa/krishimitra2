@@ -18,14 +18,15 @@ def run_migrations():
         print(f"⚠️ Base.metadata.create_all note: {e}")
 
     backend_dir = Path(__file__).resolve().parent
-    # Check both backend/migrations and root migrations/
-    migrations_dir = backend_dir / "migrations"
+    # Root migrations directory (Krishi-Mitra/migrations)
+    migrations_dir = backend_dir.parent / "migrations"
     if not migrations_dir.exists():
-        migrations_dir = backend_dir.parent / "migrations"
+        migrations_dir = backend_dir / "migrations"
 
     if not migrations_dir.exists():
-        print(f"❌ Migrations directory not found at {migrations_dir}")
-        return False
+        err_msg = f"❌ Migrations directory not found at {migrations_dir} or {backend_dir.parent / 'migrations'}"
+        print(err_msg)
+        raise FileNotFoundError(err_msg)
 
     with SessionLocal() as db:
         # Create schema_migrations tracking table if missing

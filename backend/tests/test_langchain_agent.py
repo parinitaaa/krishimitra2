@@ -48,6 +48,7 @@ from farmer_store import (
     clear_state,
     get_farmer_alerts,
     set_farmer_language,
+    save_farmer_location,
 )
 
 
@@ -63,11 +64,14 @@ class TestLangChainAgent(unittest.IsolatedAsyncioTestCase):
             location="Nashik, Maharashtra",
             district="Nashik",
             state="Maharashtra",
+            lat=19.9975,
+            lng=73.7898,
             crops=["Tomato", "Onion"],
             soil_type="Black",
             water_source="Borewell",
             farm_size_acres=3.5,
         )
+        save_farmer_location(self.test_phone, lat=19.9975, lng=73.7898)
 
     async def asyncTearDown(self):
         clear_state(self.test_phone)

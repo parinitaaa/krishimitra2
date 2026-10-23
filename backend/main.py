@@ -16,13 +16,10 @@ from routes.progression import router as progression_router
 from routes.soil import router as soil_router
 from routes.market import router as market_router
 from routes.whatsapp import router as routes_whatsapp_router
-from scheduler import scheduler, start_scheduler
+from scheduler import scheduler, start_scheduler, register_jobs as register_scheduler_jobs, register_daily_price_fetch
 from services.db import Base, engine
-from services.price_fetcher import run_daily_fetch
 from outbreak.routes import router as outbreak_router
-from outbreak.scheduler import check_new_detections
-
-_executor = ThreadPoolExecutor(max_workers=1)
+from outbreak.scheduler import register_jobs as register_outbreak_jobs
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,18 +49,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Database connection failed (tables not created): {e}")
 
-    loop = asyncio.get_event_loop()
-
-    scheduler.add_job(
-        lambda: loop.run_in_executor(_executor, run_daily_fetch),
-        trigger="cron", hour=0, minute=0,
-        id="daily_price_fetch", replace_existing=True,
-    )
-    scheduler.add_job(
-        check_new_detections,
-        trigger="interval", seconds=100,
-        id="outbreak_monitor", replace_existing=True,
-    )
+    # Register jobs via module register functions
+    register_scheduler_jobs(scheduler)
+    register_daily_price_fetch(scheduler)
+    register_outbreak_jobs(scheduler)
 
     start_scheduler()
     print("🚀 Scheduler started")
