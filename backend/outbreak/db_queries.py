@@ -3,7 +3,11 @@ from math import radians, cos, sin, asin, sqrt
 from sqlalchemy import text
 
 def get_all_farmers(db: Session):
-    return db.execute(text("SELECT * FROM farmers")).mappings().all()
+    from farmer_store import TEST_PHONE_PREFIX
+    return db.execute(
+        text("SELECT * FROM farmers WHERE phone NOT LIKE :test_prefix"),
+        {"test_prefix": f"{TEST_PHONE_PREFIX}%"},
+    ).mappings().all()
 
 
 def get_nearby_farmers(db: Session, lat, lng, radius_km=50):

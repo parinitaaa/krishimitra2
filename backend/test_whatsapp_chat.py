@@ -32,13 +32,17 @@ except Exception:
 
 import services.whatsapp_service as ws
 from farmer_store import (
+    TEST_PHONE_PREFIX,
     normalize_phone,
     get_farmer,
     update_farmer_profile,
     mark_message_processed,
     get_farmer_language,
     get_farmer_location,
+    delete_farmer_records,
 )
+from services.db import SessionLocal
+from sqlalchemy import text
 
 # Intercept send_message to record outgoing messages for test assertions
 outbound_messages = []
@@ -51,10 +55,32 @@ ws.send_message = mock_send_message
 
 
 class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
+    def _delete_test_messages(self):
+        if hasattr(self, "created_sids") and self.created_sids:
+            with SessionLocal() as db:
+                for sid in self.created_sids:
+                    db.execute(text("DELETE FROM processed_messages WHERE message_sid = :sid"), {"sid": sid})
+                db.commit()
+
     async def asyncSetUp(self):
         outbound_messages.clear()
-        self.test_phone = f"+9198888{uuid.uuid4().hex[:5]}"
+        self.created_sids = []
+        # Use reserved test phone prefix
+        self.test_phone = f"{TEST_PHONE_PREFIX}{uuid.uuid4().hex[:4]}"
         self.norm_phone = normalize_phone(self.test_phone)
+        # Ensure clean state before test
+        delete_farmer_records(self.norm_phone)
+
+    async def asyncTearDown(self):
+        outbound_messages.clear()
+        # Clean up database after test
+        delete_farmer_records(self.norm_phone)
+        self._delete_test_messages()
+
+    def new_sid(self) -> str:
+        sid = f"SM_{uuid.uuid4().hex}"
+        self.created_sids.append(sid)
+        return sid
 
     async def test_01_first_message_gives_greeting_and_language_menu(self):
         """(i) First message 'tomato price?' gives greeting + language menu and no price answer."""
@@ -62,7 +88,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "From": self.test_phone,
             "Body": "tomato price?",
             "NumMedia": "0",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         }
         await ws.handle_incoming_message(form_data)
         self.assertTrue(len(outbound_messages) >= 1)
@@ -82,7 +108,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "From": self.test_phone,
             "Body": "Hello",
             "NumMedia": "0",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         })
         outbound_messages.clear()
 
@@ -91,7 +117,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "From": self.test_phone,
             "Body": "kannada",
             "NumMedia": "0",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         })
         self.assertTrue(len(outbound_messages) >= 1)
         last_msg = outbound_messages[-1]["text"]
@@ -110,7 +136,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "From": self.test_phone,
             "Body": "3",  # English
             "NumMedia": "0",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         })
         outbound_messages.clear()
 
@@ -119,7 +145,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "From": self.test_phone,
             "Body": "Ravi",
             "NumMedia": "0",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         })
         self.assertTrue(len(outbound_messages) >= 1)
         last_msg = outbound_messages[-1]["text"]
@@ -142,7 +168,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "NumMedia": "0",
             "Latitude": "12.9716",
             "Longitude": "77.5946",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         })
         self.assertTrue(len(outbound_messages) >= 1)
         last_msg = outbound_messages[-1]["text"]
@@ -163,7 +189,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "NumMedia": "1",
             "MediaUrl0": "https://example.com/leaf.jpg",
             "MediaContentType0": "image/jpeg",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         })
         self.assertTrue(len(outbound_messages) >= 1)
         last_msg = outbound_messages[-1]["text"]
@@ -179,7 +205,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "From": self.test_phone,
             "Body": "I want to end my life, please help",
             "NumMedia": "0",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         })
         self.assertTrue(len(outbound_messages) >= 1)
         last_msg = outbound_messages[-1]["text"]
@@ -195,7 +221,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
             "From": self.test_phone,
             "Body": "सुरेश कुमार",
             "NumMedia": "0",
-            "MessageSid": f"SM_{uuid.uuid4().hex}",
+            "MessageSid": self.new_sid(),
         })
         self.assertTrue(len(outbound_messages) >= 1)
         last_msg = outbound_messages[-1]["text"]
@@ -209,7 +235,7 @@ class TestWhatsAppEntryFlow(unittest.IsolatedAsyncioTestCase):
 
     async def test_08_duplicate_message_sid_deduplication(self):
         """(viii) Duplicate MessageSid is ignored."""
-        sid = f"SM_{uuid.uuid4().hex}"
+        sid = self.new_sid()
         self.assertTrue(mark_message_processed(sid))
         # Immediate second call with same SID must be recognized as duplicate
         self.assertFalse(mark_message_processed(sid))

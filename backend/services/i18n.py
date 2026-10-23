@@ -37,7 +37,7 @@ TRILINGUAL_CRISIS = (
     "कृपया तुरंत सहायता प्राप्त करें / ದಯವಿಟ್ಟು ನೆರವು ಪಡೆಯಿರಿ / Please reach out for help."
 )
 
-TRILINGUAL_GREETING_MENU = """🌾 KrishiMitra mein aapka swagat hai!
+TRILINGUAL_GREETING_MENU = """🌾 कृषिमित्र में आपका स्वागत है!
 ಕೃಷಿಮಿತ್ರಕ್ಕೆ ಸ್ವಾಗತ!
 Welcome to KrishiMitra, your farming friend!
 
@@ -59,7 +59,7 @@ STRINGS = {
             "धन्यवाद, *{salutation}*!\n\n"
             "कृपया अपनी खेत या गाँव की *लोकेशन शेयर करें* 📍\n\n"
             "तरीका:\n"
-            "1. चैट में Attachment (📎 বা +) दबाएं\n"
+            "1. चैट में Attachment (📎 या +) दबाएं\n"
             "2. Location चुनें\n"
             "3. 'Send your current location' पर टैप करें\n\n"
             "(लोकेशन से आपको सबसे नज़दीकी मंडी, स्थानीय मौसम और बीमारी के प्रकोप की चेतावनी समय पर मिलेगी। "
@@ -90,6 +90,37 @@ STRINGS = {
             "ऑडियो संदेश और वीडियो अभी समर्थित नहीं हैं।"
         ),
         "location_updated": "आपकी लोकेशन अपडेट कर दी गई है: *{place}* ✅",
+        "briefing_greeting": "नमस्ते {salutation}! 🌾",
+        "briefing_greeting_neutral": "नमस्ते! 🌾",
+        "briefing_weather": "आज {location} में मौसम: {condition}, तापमान {temp}°C, नमी {humidity}%।",
+        "briefing_price_item": "• *{crop}*: ₹{price}/क्विंटल ({market}, {date})",
+        "briefing_price_section": "📊 *मंडी भाव:*\n{items}",
+        "briefing_disease_followup": "🩺 *फ़सल स्वास्थ्य:* {disease} ({crop}) का कैसा हाल है? अगर समस्या बनी हुई है तो नई फ़ोटो भेजें।",
+        "briefing_closing": "कोई भी सवाल हो या फ़ोटो — बेझिझक भेजें!",
+        "price_alert_triggered": (
+            "🔔 *भाव अलर्ट!*\n\n"
+            "*{crop}* अब ₹*{price}*/क्विंटल है।\n"
+            "मंडी: *{market}* ({distance_km} किमी)\n"
+            "आपका लक्ष्य: ₹{target_price} से {direction}\n\n"
+            "✅ बेचने का अच्छा अवसर हो सकता है! 🌾"
+        ),
+        "price_direction_above": "ऊपर",
+        "price_direction_below": "नीचे",
+        "quick_greeting": "नमस्ते! 🌾 मैं आपकी खेती और मंडी भाव में कैसे मदद कर सकता हूँ?",
+        "quick_thanks": "आपका स्वागत है! खेती या भाव से जुड़ा कोई भी सवाल हो तो बेझिझक पूछें।",
+        "quick_ack": "जी ठीक है! जब भी ज़रूरत हो, संदेश या पत्ते की फ़ोटो भेजें।",
+        "quick_bye": "नमस्ते! आपकी फ़सल अच्छी रहे। फिर मिलेंगे!",
+        "quick_help": (
+            "🌾 *कृषि-मित्र सहायता:*\n"
+            "• *मंडी भाव:* 'टमाटर का आज का भाव'\n"
+            "• *भाव अलर्ट:* 'प्याज 2000 से ऊपर जाए तो अलर्ट करें'\n"
+            "• *फ़सल डॉक्टर:* बीमार पत्ते की फ़ोटो भेजें\n"
+            "• *मौसम:* 'आज का मौसम'\n"
+            "• *भाषा बदलें:* 'change language' लिखें"
+        ),
+        "alert_confirm_ask": "क्या आप *{crop}* का भाव ₹*{price}*/क्विंटल से {direction} होने पर अलर्ट सेट करना चाहते हैं? (हाँ/नहीं)",
+        "alert_created_success": "✅ *{crop}* के लिए ₹{price}/क्विंटल से {direction} का अलर्ट सेट कर दिया गया है। भाव आने पर सूचना दी जाएगी।",
+        "alert_cancelled": "ठीक है, अलर्ट सेट नहीं किया गया।",
     },
     "kannada": {
         "lang_confirm": "ಧನ್ಯವಾದಗಳು! ನಿಮ್ಮ ಭಾಷೆಯನ್ನು *ಕನ್ನಡ* ಎಂದು ಆಯ್ಕೆ ಮಾಡಲಾಗಿದೆ.",
@@ -131,6 +162,37 @@ STRINGS = {
             "ಆಡಿಯೋ ಮತ್ತು ವಿಡಿಯೋ ಸದ್ಯಕ್ಕೆ ಲಭ್ಯವಿಲ್ಲ."
         ),
         "location_updated": "ನಿಮ್ಮ ಸ್ಥಳವನ್ನು ನವೀಕರಿಸಲಾಗಿದೆ: *{place}* ✅",
+        "briefing_greeting": "ಶುಭೋದಯ {salutation}! 🌾",
+        "briefing_greeting_neutral": "ಶುಭೋದಯ! 🌾",
+        "briefing_weather": "ಇಂದು {location} ಹವಾಮಾನ: {condition}, ತಾಪಮಾನ {temp}°C, ತೇವಾಂಶ {humidity}%.",
+        "briefing_price_item": "• *{crop}*: ₹{price}/ಕ್ವಿಂಟಾಲ್ ({market}, {date})",
+        "briefing_price_section": "📊 *ಮಾರುಕಟ್ಟೆ ದರ:*\n{items}",
+        "briefing_disease_followup": "🩺 *ಬೆಳೆ ಆರೋಗ್ಯ:* {disease} ({crop}) ಹೇಗಿದೆ? ಸಮಸ್ಯೆ ಮುಂದುವರಿದರೆ ಹೊಸ ಫೋಟೋ ಕಳುಹಿಸಿ.",
+        "briefing_closing": "ಯಾವುದೇ ಪ್ರಶ್ನೆ ಅಥವಾ ಫೋಟೋ ಇದ್ದರೆ ಹಿಂಜರಿಯದೆ ಕಳುಹಿಸಿ!",
+        "price_alert_triggered": (
+            "🔔 *ಬೆಲೆ ಎಚ್ಚರಿಕೆ!*\n\n"
+            "*{crop}* ಈಗ ₹*{price}*/ಕ್ವಿಂಟಾಲ್ ಆಗಿದೆ.\n"
+            "ಮಾರುಕಟ್ಟೆ: *{market}* ({distance_km} ಕಿ.ಮೀ)\n"
+            "ನಿಮ್ಮ ಗುರಿ: ₹{target_price} ಗಿಂತ {direction}\n\n"
+            "✅ ಮಾರಾಟ ಮಾಡಲು ಇದು ಉತ್ತಮ ಸಮಯವಾಗಿರಬಹುದು! 🌾"
+        ),
+        "price_direction_above": "ಹೆಚ್ಚು",
+        "price_direction_below": "ಕಡಿಮೆ",
+        "quick_greeting": "ನಮಸ್ಕಾರ! 🌾 ಕೃಷಿ ಅಥವಾ ಮಾರುಕಟ್ಟೆ ದರದ ಬಗ್ಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?",
+        "quick_thanks": "ನಿಮಗೆ ಸ್ವಾಗತ! ಯಾವುದೇ ಕೃಷಿ ಮಾಹಿತಿ ಅಥವಾ ದರದ ಅಗತ್ಯವಿದ್ದಾಗ ಕೇಳಿ.",
+        "quick_ack": "ಸರಿ! ಅಗತ್ಯವಿದ್ದಾಗ ಸಂದೇಶ ಅಥವಾ ಎಲೆಯ ಫೋಟೋ ಕಳುಹಿಸಿ.",
+        "quick_bye": "ನಮಸ್ಕಾರ! ನಿಮ್ಮ ಬೆಳೆ ಸಮೃದ್ಧವಾಗಿರಲಿ.",
+        "quick_help": (
+            "🌾 *ಕೃಷಿಮಿತ್ರ ಸಹಾಯ:*\n"
+            "• *ಮಾರುಕಟ್ಟೆ ದರ:* 'ಇಂದಿನ ಟೊಮೆಟೊ ಬೆಲೆ'\n"
+            "• *ಬೆಲೆ ಎಚ್ಚರಿಕೆ:* 'ಈರುಳ್ಳಿ 2000 ಕ್ಕಿಂತ ಹೆಚ್ಚಾದಾಗ ತಿಳಿಸಿ'\n"
+            "• *ಬೆಳೆ ರೋಗ ತಪಾಸಣೆ:* ರೋಗಗ್ರಸ್ತ ಎಲೆಯ ಫೋಟೋ ಕಳುಹಿಸಿ\n"
+            "• *ಹವಾಮಾನ:* 'ಇಂದಿನ ಹವಾಮಾನ'\n"
+            "• *ಭಾಷೆ ಬದಲಾವಣೆ:* 'change language' ಎಂದು ಕಳುಹಿಸಿ"
+        ),
+        "alert_confirm_ask": "*{crop}* ಬೆಲೆ ₹*{price}*/ಕ್ವಿಂಟಾಲ್ ಗಿಂತ {direction} ಆದಾಗ ಎಚ್ಚರಿಕೆ ನೀಡಬೇಕೇ? (ಹೌದು/ಇಲ್ಲ)",
+        "alert_created_success": "✅ *{crop}* ಬೆಲೆ ₹{price}/ಕ್ವಿಂಟಾಲ್ ಗಿಂತ {direction} ಆದಾಗ ಎಚ್ಚರಿಕೆ ನೀಡುವಂತೆ ಹೊಂದಿಸಲಾಗಿದೆ.",
+        "alert_cancelled": "ಸರಿ, ಬೆಲೆ ಎಚ್ಚರಿಕೆಯನ್ನು ಹೊಂದಿಸಲಾಗಿಲ್ಲ.",
     },
     "english": {
         "lang_confirm": "Thank you! Your language has been set to *English*.",
@@ -172,6 +234,37 @@ STRINGS = {
             "Audio notes and videos are not supported yet."
         ),
         "location_updated": "Your location has been updated to: *{place}* ✅",
+        "briefing_greeting": "Good morning, {salutation}! 🌾",
+        "briefing_greeting_neutral": "Good morning! 🌾",
+        "briefing_weather": "Today's weather in {location}: {condition}, temp {temp}°C, humidity {humidity}%.",
+        "briefing_price_item": "• *{crop}*: ₹{price}/quintal ({market}, {date})",
+        "briefing_price_section": "📊 *Market Prices:*\n{items}",
+        "briefing_disease_followup": "🩺 *Crop Health:* How is your {crop} ({disease}) doing? If issues persist, please send a fresh photo.",
+        "briefing_closing": "Feel free to send a photo or message if you have any questions!",
+        "price_alert_triggered": (
+            "🔔 *Price Alert!*\n\n"
+            "*{crop}* is now ₹*{price}*/quintal.\n"
+            "Market: *{market}* ({distance_km} km)\n"
+            "Your target was: {direction} ₹{target_price}\n\n"
+            "✅ Good time to consider selling! 🌾"
+        ),
+        "price_direction_above": "above",
+        "price_direction_below": "below",
+        "quick_greeting": "Hello! 🌾 How can I help with your farming or mandi prices today?",
+        "quick_thanks": "You're welcome! Feel free to ask anytime about crops, prices, or farm practices.",
+        "quick_ack": "Understood! Send a message or photo whenever you need support.",
+        "quick_bye": "Goodbye! Wishing you a bountiful harvest. See you soon!",
+        "quick_help": (
+            "🌾 *KrishiMitra Help:*\n"
+            "• *Mandi Prices:* 'tomato price today'\n"
+            "• *Price Alerts:* 'alert me when onion goes above 2000'\n"
+            "• *Crop Doctor:* Send a photo of an affected leaf\n"
+            "• *Weather:* 'today weather'\n"
+            "• *Language:* Send 'change language' anytime"
+        ),
+        "alert_confirm_ask": "Shall I set an alert when *{crop}* goes {direction} ₹*{price}*/quintal? (yes/no)",
+        "alert_created_success": "✅ Alert set for *{crop}* when price goes {direction} ₹{price}/quintal at nearby mandis.",
+        "alert_cancelled": "Alright, no alert was set.",
     },
 }
 

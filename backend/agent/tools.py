@@ -131,9 +131,35 @@ def get_mandi_price(crop: str, state: Optional[str] = None) -> dict:
                 rows = get_all_latest_prices(clean_crop, db)
 
             if rows:
+                # If farmer has a saved location, order rows by distance using existing helper functions
+                f_prof = _get_active_farmer_profile()
+                f_lat = f_prof.get("lat")
+                f_lng = f_prof.get("lng")
+
+                from services.market_service import get_market_coordinates, haversine_distance
+
+                sorted_rows = []
+                for r in rows:
+                    dist_km = None
+                    if f_lat is not None and f_lng is not None:
+                        coords = get_market_coordinates(
+                            market=r.get("market", "").strip(),
+                            district=r.get("district", "").strip(),
+                            state=r.get("state", "").strip(),
+                        )
+                        if coords:
+                            dist_km = round(haversine_distance(f_lat, f_lng, coords["lat"], coords["lng"]), 1)
+                    sorted_rows.append((dist_km if dist_km is not None else 999999.0, r, dist_km))
+
+                if f_lat is not None and f_lng is not None:
+                    sorted_rows.sort(key=lambda x: x[0])
+
+                selected = sorted_rows[:3]
+
                 return {
                     "crop": clean_crop,
                     "state": target_state,
+                    "unit": "₹ per quintal (100 kg)",
                     "source": "mandi_database",
                     "prices": [
                         {
@@ -143,9 +169,10 @@ def get_mandi_price(crop: str, state: Optional[str] = None) -> dict:
                             "modal_price": r.get("modal_price"),
                             "min_price": r.get("min_price"),
                             "max_price": r.get("max_price"),
-                            "date":  str(r.get("date") or r.get("arrival_date") or ""),
+                            "date": str(r.get("date") or r.get("arrival_date") or ""),
+                            "distance_km": dist,
                         }
-                        for r in rows[:5]
+                        for _, r, dist in selected
                     ],
                 }
     except Exception as e:
@@ -156,6 +183,7 @@ def get_mandi_price(crop: str, state: Optional[str] = None) -> dict:
         "error": "no_data",
         "crop": clean_crop,
         "state": target_state,
+        "unit": "₹ per quintal (100 kg)",
         "message": f"No current mandi prices found for {clean_crop}.",
     }
 

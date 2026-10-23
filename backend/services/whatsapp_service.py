@@ -36,6 +36,7 @@ from farmer_store import (
     set_farmer_language,
     set_onboarding_step,
     get_state,
+    set_state,
     clear_state,
     add_chat,
 )
@@ -57,6 +58,166 @@ if not (_MODEL_DIR / "classifier.onnx").exists():
     _MODEL_DIR = AGENT_DIR / "models"
 CLASSIFIER_PATH = str(_MODEL_DIR / "classifier.onnx")
 DETECTOR_PATH   = str(_MODEL_DIR / "detector.onnx")
+
+
+def format_for_whatsapp(text: str) -> str:
+    """
+    Format message text cleanly for WhatsApp:
+    - **bold** -> *bold*
+    - # header -> *header*
+    - markdown tables -> "• col1: col2" lines (dropping separator rows)
+    - strip code fences (```)
+    - collapse 3+ consecutive blank lines into 2
+    """
+    if not text:
+        return ""
+
+    s = text
+
+    # 1. Strip code fences
+    s = re.sub(r"```[a-zA-Z]*\n?", "", s)
+    s = s.replace("```", "")
+
+    # 2. Markdown tables -> bullet lines
+    lines = s.split("\n")
+    cleaned_lines = []
+    in_table = False
+    table_headers = []
+
+    for line in lines:
+        stripped = line.strip()
+        # Check if table separator row: |---|---|
+        if re.match(r"^\|?[\s\-:]+(\|[\s\-:]+)+\|?$", stripped):
+            in_table = True
+            continue
+        # Check if table row: | a | b |
+        if stripped.startswith("|") and stripped.endswith("|") and "|" in stripped[1:-1]:
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            # Clean formatting in cells
+            cells = [re.sub(r"\*\*([^*]+)\*\*", r"\1", c).strip("*") for c in cells]
+            if not in_table and not table_headers:
+                table_headers = cells
+                in_table = True
+                continue
+            elif table_headers and len(cells) == len(table_headers):
+                # Format as "• Market: Kolar | Modal Price: ₹860"
+                items_str = ", ".join(f"{h}: {v}" for h, v in zip(table_headers, cells) if v)
+                cleaned_lines.append(f"• {items_str}")
+            else:
+                cleaned_lines.append("• " + " | ".join(cells))
+            continue
+        else:
+            in_table = False
+            table_headers = []
+
+        # 3. Headings: "# Header" or "## Header" -> "*Header*"
+        line_clean = re.sub(r"^#{1,6}\s+(.*)$", r"*\1*", line)
+        cleaned_lines.append(line_clean)
+
+    s = "\n".join(cleaned_lines)
+
+    # 4. Convert **bold** -> *bold*
+    s = re.sub(r"\*\*([^*]+)\*\*", r"*\1*", s)
+
+    # 5. Collapse excessive blank lines
+    s = re.sub(r"\n{3,}", "\n\n", s)
+
+    return s.strip()
+
+
+def parse_price_alert_intent(text: str) -> dict | None:
+    """
+    Extract crop, direction, and target price from price alert request.
+    If market isn't given, defaults to None (treated as all nearby mandis).
+    """
+    if not text:
+        return None
+    s = text.strip().lower()
+
+    alert_keywords = ["alert", "notify", "notification", "सूचना", "अलर्ट", "ತಿಳಿಸಿ", "ಎಚ್ಚರಿಕೆ"]
+    if not any(k in s for k in alert_keywords):
+        return None
+
+    # Number for target price
+    num_match = re.search(r"(?:rs\.?|₹|\b)?\s*([0-9]{2,6}(?:,[0-9]{3})*)\b", s)
+    if not num_match:
+        return None
+    try:
+        price_val = float(num_match.group(1).replace(",", ""))
+    except Exception:
+        return None
+
+    # Direction
+    direction = "above"
+    if any(w in s for w in ["below", "under", "less", "नीचे", "कम", "ಕಡಿಮೆ"]):
+        direction = "below"
+    elif any(w in s for w in ["above", "more", "over", "ऊपर", "ज्यादा", "ಹೆಚ್ಚು"]):
+        direction = "above"
+
+    # Crop
+    crop = None
+    crop_aliases = {
+        "onion": ["onion", "onions", "pyaj", "pyaaz", "प्याज", "ಈರುಳ್ಳಿ"],
+        "tomato": ["tomato", "tomatoes", "tamatar", "टमाटर", "ಟೊಮೆಟೊ", "ಟೊಮೇಟೊ"],
+        "potato": ["potato", "potatoes", "aloo", "आलू", "ಆಲೂಗಡ್ಡೆ", "ಆಲೂ"],
+        "wheat": ["wheat", "gehun", "गेहूं", "ಗೋಧಿ"],
+        "rice": ["rice", "paddy", "chawal", "चावल", "ಅಕ್ಕಿ", "ಭತ್ತ"],
+        "chilli": ["chilli", "chili", "mirchi", "मिर्च", "ಮೆಣಸಿನಕಾಯಿ"],
+        "garlic": ["garlic", "lahsun", "लहसुन", "ಬೆಳ್ಳುಳ್ಳಿ"],
+    }
+    for canon, aliases in crop_aliases.items():
+        if any(a in s for a in aliases):
+            crop = canon
+            break
+
+    if not crop:
+        # Fallback to alphanumeric words
+        for w in re.findall(r"[a-zA-Z]+", s):
+            if w not in ("alert", "me", "when", "goes", "above", "below", "over", "under", "price", "is", "at", "to"):
+                crop = w
+                break
+
+    if crop and price_val:
+        return {
+            "crop": crop,
+            "target_price": price_val,
+            "direction": direction,
+            "market": None,
+        }
+    return None
+
+
+def check_deterministic_reply(body: str, lang: str | None) -> str | None:
+    """
+    BUG 8: Fast deterministic handlers (no LLM, no tools) checked before the agent:
+    - greetings / 'thanks' / 'ok' / 'bye' -> one short warm line.
+    - 'help' / 'menu' -> short list of capabilities with examples.
+    """
+    clean = (body or "").strip().lower()
+    clean_words = set(re.findall(r"[\w']+", clean))
+
+    # 1. Greetings
+    if clean in ("hi", "hello", "hey", "namaste", "namaskara", "namaskar", "start"):
+        return get_string("quick_greeting", lang)
+
+    # 2. Thanks / Gratitude
+    if clean in ("thanks", "thank you", "dhanyavaad", "dhanyavada", "dhanyavadagalu", "shukriya") or \
+       clean_words.issubset({"thanks", "thank", "you", "a", "lot", "very", "much"}):
+        return get_string("quick_thanks", lang)
+
+    # 3. Acknowledgment / OK
+    if clean in ("ok", "okay", "accha", "theek hai", "sari", "ha", "haan", "ho"):
+        return get_string("quick_ack", lang)
+
+    # 4. Farewell / Bye
+    if clean in ("bye", "goodbye", "alvida"):
+        return get_string("quick_bye", lang)
+
+    # 5. Help / Menu
+    if clean in ("help", "menu", "madad", "sahayate", "commands"):
+        return get_string("quick_help", lang)
+
+    return None
 
 
 def _split_message(text: str, max_len: int = 1500) -> list[str]:
@@ -98,17 +259,33 @@ def _split_message(text: str, max_len: int = 1500) -> list[str]:
 async def send_message(phone: str, text: str, retries: int = 3) -> bool:
     """
     Unified outbound reply path via Twilio REST.
+    Applies format_for_whatsapp().
     Splits messages >1500 chars on paragraph boundaries with small delays.
     Retries with exponential backoff.
     """
     if not text or not text.strip():
         return False
 
+    formatted_text = format_for_whatsapp(text)
+    if not formatted_text:
+        formatted_text = text.strip()
+
     clean_phone = normalize_phone(phone)
+
+    # GUARD: Never call Twilio for a reserved test number
+    from farmer_store import is_test_phone
+    if is_test_phone(clean_phone):
+        print(f"[WhatsApp] [TEST_GUARD] Simulated send to test phone {clean_phone}: {formatted_text[:80]}...")
+        try:
+            await asyncio.to_thread(add_chat, clean_phone, "assistant", formatted_text)
+        except Exception as e:
+            print(f"[WhatsApp] Failed to record outbound test chat: {e}")
+        return True
+
     to_addr = f"whatsapp:{clean_phone}" if not clean_phone.startswith("whatsapp:") else clean_phone
     from_addr = FROM_NUMBER if FROM_NUMBER.startswith("whatsapp:") else f"whatsapp:{FROM_NUMBER}"
 
-    chunks = _split_message(text, max_len=1500)
+    chunks = _split_message(formatted_text, max_len=1500)
 
     for chunk in chunks:
         sent = False
@@ -136,7 +313,7 @@ async def send_message(phone: str, text: str, retries: int = 3) -> bool:
 
     # Persist outbound bot message to chat history
     try:
-        await asyncio.to_thread(add_chat, clean_phone, "assistant", text)
+        await asyncio.to_thread(add_chat, clean_phone, "assistant", formatted_text)
     except Exception as e:
         print(f"[WhatsApp] Failed to record outbound chat: {e}")
 
@@ -313,6 +490,98 @@ async def handle_incoming_message(form_data: dict) -> None:
         confirm_loc = get_string("location_updated", lang, place=disp)
         await send_message(phone, confirm_loc)
         return
+
+    # ── 4B. TWO-STEP PRICE ALERT CONFIRMATION & DETERMINISTIC REPLIES ──────────
+    if not (num_media > 0 and media_url) and body:
+        # A. Pending price alert confirmation
+        pending_state = await asyncio.to_thread(get_state, phone)
+        if pending_state and pending_state.get("flow") == "price_alert_confirm":
+            data = pending_state.get("data") or {}
+            clean_body = body.strip().lower()
+            affirmatives = {
+                "yes", "y", "yeah", "yep", "sure", "ok", "okay",
+                "haan", "ha", "bilkul", "sahi", "houdu", "haudu", "sari",
+                "ಹೌದು", "ಹಾ", "ಸರಿ", "हाँ", "हाँ सेट करें", "सेट करो"
+            }
+            negatives = {
+                "no", "n", "nope", "nahi", "illa", "bedi", "ಇಲ್ಲ", "ಬೇಡ", "नहीं", "मत करो"
+            }
+
+            if clean_body in affirmatives or any(clean_body == a for a in affirmatives):
+                await asyncio.to_thread(clear_state, phone)
+                crop = data.get("crop", "crop")
+                target_price = float(data.get("target_price", 0))
+                direction = data.get("direction", "above")
+                market = data.get("market")
+
+                from agent.tools import create_price_alert, active_farmer_phone
+                token = active_farmer_phone.set(phone)
+                try:
+                    tool_res = await asyncio.to_thread(
+                        create_price_alert.invoke,
+                        {
+                            "crop": crop,
+                            "target_price": target_price,
+                            "direction": direction,
+                            "market": market,
+                        },
+                    )
+                finally:
+                    active_farmer_phone.reset(token)
+
+                if isinstance(tool_res, dict) and tool_res.get("status") == "created":
+                    dir_key = "price_direction_above" if direction == "above" else "price_direction_below"
+                    direction_word = get_string(dir_key, lang)
+                    success_msg = get_string(
+                        "alert_created_success",
+                        lang,
+                        crop=crop.title(),
+                        price=int(target_price),
+                        direction=direction_word,
+                    )
+                    await send_message(phone, success_msg)
+                    return
+                else:
+                    err_msg = (tool_res.get("message") if isinstance(tool_res, dict) else None) or "Unable to set alert at this time."
+                    await send_message(phone, f"Could not set alert: {err_msg}")
+                    return
+
+            elif clean_body in negatives or any(clean_body == n for n in negatives):
+                await asyncio.to_thread(clear_state, phone)
+                cancel_msg = get_string("alert_cancelled", lang)
+                await send_message(phone, cancel_msg)
+                return
+            else:
+                # Unrelated message: clear state and fall through
+                await asyncio.to_thread(clear_state, phone)
+
+        # B. Price alert intent detection
+        alert_intent = parse_price_alert_intent(body)
+        if alert_intent:
+            await asyncio.to_thread(
+                set_state,
+                phone,
+                flow="price_alert_confirm",
+                step="ask_confirm",
+                data=alert_intent,
+            )
+            dir_key = "price_direction_above" if alert_intent["direction"] == "above" else "price_direction_below"
+            direction_word = get_string(dir_key, lang)
+            ask_msg = get_string(
+                "alert_confirm_ask",
+                lang,
+                crop=alert_intent["crop"].title(),
+                price=int(alert_intent["target_price"]),
+                direction=direction_word,
+            )
+            await send_message(phone, ask_msg)
+            return
+
+        # C. Fast deterministic handlers (greetings / thanks / ok / bye / help / menu)
+        quick_reply = check_deterministic_reply(body, lang)
+        if quick_reply:
+            await send_message(phone, quick_reply)
+            return
 
     # ── 5. IMAGE MESSAGE (Disease Flow) ────────────────────────────────────────
     image_path = None

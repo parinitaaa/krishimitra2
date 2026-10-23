@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Agronomic guidance database for crop stages, nutrition, and management practices vetted by agricultural universities (UAS Bangalore/Dharwad, ICAR, KVK). Stubs must be authored by certified agronomists and cite authoritative Package of Practices sources.",
+  "crops": {
+    "tomato": {
+      "stages": {
+        "nursery": {
+          "advice": "Raise seedlings on raised beds with well-decomposed FYM and Trichoderma. Ensure proper drainage.",
+          "source": "UAS Dharwad Package of Practices for Vegetable Crops",
+          "reviewer": "Agronomy Specialist, KVK",
+          "reviewed_at": "2026-01-15"
+        },
+        "vegetative": {
+          "advice": "Incorporate well-rotted compost. Apply balanced nutrients according to regional soil test recommendations and university package of practices.",
+          "source": "ICAR-IIHR Package of Practices for Tomato",
+          "reviewer": "Agronomy Specialist, KVK",
+          "reviewed_at": "2026-01-15"
+        },
+        "flowering": {
+          "advice": "Maintain uniform soil moisture. Avoid water-logging. Monitor closely for foliar spots and blossom end rot (calcium balance).",
+          "source": "ICAR-IIHR Package of Practices for Tomato",
+          "reviewer": "Agronomy Specialist, KVK",
+          "reviewed_at": "2026-01-15"
+        },
+        "fruiting": {
+          "advice": "Support heavy fruit load with staking. Maintain consistent moisture to prevent fruit cracking.",
+          "source": "UAS Bangalore Package of Practices",
+          "reviewer": "Agronomy Specialist, KVK",
+          "reviewed_at": "2026-01-15"
+        }
+      }
+    },
+    "onion": {
+      "stages": {
+        "vegetative": {
+          "advice": "Apply organic manure during bed preparation. Ensure adequate sulfur and potassium per soil health card guidelines.",
+          "source": "ICAR-DOGR Package of Practices for Onion & Garlic",
+          "reviewer": "Agronomy Specialist, KVK",
+          "reviewed_at": "2026-01-15"
+        },
+        "bulb_development": {
+          "advice": "Cease nitrogen applications before bulb maturity. Avoid excessive moisture to prevent bulb rot.",
+          "source": "ICAR-DOGR Package of Practices for Onion & Garlic",
+          "reviewer": "Agronomy Specialist, KVK",
+          "reviewed_at": "2026-01-15"
+        }
+      }
+    },
+    "potato": {
+      "stages": {
+        "tuber_initiation": {
+          "advice": "Earthing up is essential at 30-35 days to prevent greening of tubers. Maintain cool, moist soil conditions without water accumulation.",
+          "source": "ICAR-CPRI Shimla Potato Advisory",
+          "reviewer": "Agronomy Specialist, KVK",
+          "reviewed_at": "2026-01-15"
+        }
+      }
+    }
+  }
+}

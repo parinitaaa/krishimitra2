@@ -242,6 +242,133 @@ class TestLangChainAgent(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("rate limit", reply)
         self.assertNotIn("Sorry, please try again. Error:", reply)
 
+    async def test_08_echo_last_human_message(self):
+        """
+        BUG 1 regression test: A fake LLM that echoes the text of the LAST human message.
+        Sequence ["what fertilizer for tomato?", "thanks"] must echo "thanks".
+        """
+        echo_phone = "+910000000088"
+        from farmer_store import delete_farmer_records, get_or_create_farmer
+        delete_farmer_records(echo_phone)
+        get_or_create_farmer(echo_phone)
+
+        try:
+            # Fake LLM that returns an AIMessage echoing the content of the LAST HumanMessage
+            class EchoMockClient:
+                def bind_tools(self, tools):
+                    return self
+
+                async def ainvoke(self, messages):
+                    human_msgs = [m for m in messages if isinstance(m, HumanMessage)]
+                    last_human = human_msgs[-1].content if human_msgs else ""
+                    return AIMessage(content=f"ECHO: {last_human}")
+
+            fake_client = EchoMockClient()
+
+            # Turn 1: "what fertilizer for tomato?"
+            add_chat(echo_phone, "user", "what fertilizer for tomato?")
+            reply1 = await process_message(
+                farmer_id=echo_phone,
+                message="what fertilizer for tomato?",
+                client=fake_client,
+            )
+            self.assertEqual(reply1, "ECHO: what fertilizer for tomato?")
+            add_chat(echo_phone, "assistant", reply1)
+
+            # Turn 2: "thanks"
+            add_chat(echo_phone, "user", "thanks")
+            reply2 = await process_message(
+                farmer_id=echo_phone,
+                message="thanks",
+                client=fake_client,
+            )
+            # The sequence must echo "thanks", NEVER the earlier fertilizer question
+            self.assertEqual(reply2, "ECHO: thanks")
+        finally:
+            delete_farmer_records(echo_phone)
+
+    async def test_09_price_alert_two_step_confirmation_and_honesty(self):
+        """
+        BUG 2: Verify price alert extraction, confirmation ask, and creation on 'yes'.
+        """
+        from services.whatsapp_service import handle_incoming_message
+        from farmer_store import delete_farmer_records, get_active_alerts
+
+        alert_phone = "+910000000089"
+        delete_farmer_records(alert_phone)
+
+        # Onboard farmer to done with location
+        update_farmer_profile(
+            alert_phone,
+            name="Suresh",
+            language="english",
+            location="Kolar, Karnataka",
+            district="Kolar",
+            state="Karnataka",
+            lat=13.1367,
+            lng=78.1291,
+            onboarding_step="done",
+        )
+        save_farmer_location(alert_phone, lat=13.1367, lng=78.1291)
+
+        try:
+            import uuid
+            # Turn 1: Ask for alert
+            await handle_incoming_message({
+                "From": alert_phone,
+                "Body": "alert me when onion goes above 2000",
+                "MessageSid": f"SM_{uuid.uuid4().hex}",
+                "NumMedia": "0",
+            })
+            state = get_state(alert_phone)
+            self.assertIsNotNone(state)
+            self.assertEqual(state.get("flow"), "price_alert_confirm")
+            self.assertEqual(state.get("data", {}).get("crop"), "onion")
+            self.assertEqual(state.get("data", {}).get("target_price"), 2000.0)
+
+            # Before confirmation: no price alert should exist in DB
+            alerts_before = get_farmer_alerts(alert_phone)
+            self.assertEqual(len(alerts_before), 0)
+
+            # Turn 2: Confirm with "yes"
+            await handle_incoming_message({
+                "From": alert_phone,
+                "Body": "yes",
+                "MessageSid": f"SM_{uuid.uuid4().hex}",
+                "NumMedia": "0",
+            })
+
+            # After confirmation: price alert row MUST exist in DB
+            alerts_after = get_farmer_alerts(alert_phone)
+            self.assertEqual(len(alerts_after), 1)
+            farmer_alert = alerts_after[0]
+            self.assertEqual(farmer_alert["commodity"], "onion")
+            self.assertEqual(farmer_alert["target_price"], 2000.0)
+            self.assertEqual(farmer_alert["direction"], "above")
+
+            # State should be cleared
+            self.assertIsNone(get_state(alert_phone))
+        finally:
+            delete_farmer_records(alert_phone)
+
+    def test_10_safe_agronomy_policy(self):
+        """
+        BUG 4: System prompt must ban doses from memory and require soil test/KVK.
+        """
+        farmer = {
+            "name": "Ramesh",
+            "language": "english",
+            "crops": ["Tomato"],
+            "location": "Kolar, Karnataka",
+        }
+        prompt = _build_system_prompt(farmer, self.test_phone)
+
+        self.assertIn("NO DOSES FROM MEMORY", prompt)
+        self.assertIn("NPK ratios", prompt)
+        self.assertIn("soil test", prompt)
+        self.assertIn("Package of Practices", prompt)
+        self.assertIn("Raitha Samparka Kendra", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

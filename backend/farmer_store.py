@@ -5,8 +5,73 @@ from sqlalchemy import text
 from services.db import SessionLocal
 
 
+TEST_PHONE_PREFIX = "+91000000"
+
+
 def normalize_phone(phone: str) -> str:
     return (phone or "").replace("whatsapp:", "").strip()
+
+
+def is_test_phone(phone: str) -> bool:
+    """Returns True if the normalized phone starts with the reserved test prefix."""
+    pid = normalize_phone(phone)
+    return pid.startswith(TEST_PHONE_PREFIX)
+
+
+def delete_farmer_records(phone: str) -> None:
+    """
+    Deletes all records across tables for a test farmer:
+    farmers, conversation_state, chat_history, processed_messages, disease_cases, case_updates, price_alerts.
+    """
+    pid = normalize_phone(phone)
+    if not pid:
+        return
+
+    with SessionLocal() as db:
+        # 1. case_updates (via disease_cases or directly)
+        db.execute(
+            text("""
+                DELETE FROM case_updates
+                WHERE case_id IN (SELECT id FROM disease_cases WHERE phone = :phone)
+            """),
+            {"phone": pid},
+        )
+        # 2. outbreak_alerts_sent
+        db.execute(
+            text("DELETE FROM outbreak_alerts_sent WHERE recipient_phone = :phone"),
+            {"phone": pid},
+        )
+        # 3. disease_cases
+        db.execute(
+            text("DELETE FROM disease_cases WHERE phone = :phone"),
+            {"phone": pid},
+        )
+        # 4. price_alerts
+        db.execute(
+            text("DELETE FROM price_alerts WHERE phone = :phone"),
+            {"phone": pid},
+        )
+        # 5. chat_history
+        db.execute(
+            text("DELETE FROM chat_history WHERE phone = :phone"),
+            {"phone": pid},
+        )
+        # 6. conversation_state
+        db.execute(
+            text("DELETE FROM conversation_state WHERE phone = :phone"),
+            {"phone": pid},
+        )
+        # 7. detections
+        db.execute(
+            text("DELETE FROM detections WHERE phone = :phone"),
+            {"phone": pid},
+        )
+        # 8. farmers
+        db.execute(
+            text("DELETE FROM farmers WHERE phone = :phone"),
+            {"phone": pid},
+        )
+        db.commit()
 
 
 def get_farmer_language(phone: str) -> str | None:
@@ -184,7 +249,7 @@ def get_chat_history(phone: str, limit: int = 10) -> list[dict]:
                 SELECT role, content
                 FROM chat_history
                 WHERE phone = :phone
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT :limit
             """),
             {"phone": pid, "limit": limit},
@@ -387,8 +452,11 @@ def get_active_alerts() -> list:
         rows = db.execute(
             text("""
                 SELECT id, phone, commodity, target_price, direction, market
-                FROM price_alerts WHERE active = TRUE
-            """)
+                FROM price_alerts
+                WHERE active = TRUE
+                  AND phone NOT LIKE :test_prefix
+            """),
+            {"test_prefix": f"{TEST_PHONE_PREFIX}%"},
         ).fetchall()
     return [
         {
@@ -650,7 +718,9 @@ def due_followup_cases() -> list[dict]:
                 WHERE status = 'open'
                   AND next_followup_at IS NOT NULL
                   AND next_followup_at <= NOW()
-            """)
+                  AND phone NOT LIKE :test_prefix
+            """),
+            {"test_prefix": f"{TEST_PHONE_PREFIX}%"},
         ).fetchall()
     return [
         {
@@ -664,3 +734,72 @@ def due_followup_cases() -> list[dict]:
         }
         for r in rows
     ]
+
+
+def get_eligible_briefing_farmers() -> list[dict]:
+    """
+    Returns farmers eligible for proactive morning briefing:
+    - onboarding_step = 'done'
+    - proactive_opt_in is true (if column exists)
+    - Has at least crops or a location (lat/lng or location string)
+    - Skips reserved test numbers
+    """
+    with SessionLocal() as db:
+        # Check if proactive_opt_in column exists in farmers table
+        has_opt_in_col = db.execute(
+            text("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'farmers' AND column_name = 'proactive_opt_in'
+            """)
+        ).scalar()
+
+        if has_opt_in_col:
+            query = """
+                SELECT phone, name, crops, location, lat, lng, language, district, state, proactive_opt_in
+                FROM farmers
+                WHERE onboarding_step = 'done'
+                  AND (proactive_opt_in IS TRUE OR proactive_opt_in IS NULL)
+                  AND phone NOT LIKE :test_prefix
+            """
+        else:
+            query = """
+                SELECT phone, name, crops, location, lat, lng, language, district, state, NULL as proactive_opt_in
+                FROM farmers
+                WHERE onboarding_step = 'done'
+                  AND phone NOT LIKE :test_prefix
+            """
+
+        rows = db.execute(text(query), {"test_prefix": f"{TEST_PHONE_PREFIX}%"}).fetchall()
+
+    farmers = []
+    for r in rows:
+        phone = r[0]
+        name = r[1] if r[1] else None
+        crops = r[2] or []
+        location = r[3] if r[3] else None
+        lat = r[4]
+        lng = r[5]
+        language = r[6] or "english"
+        district = r[7] if r[7] else None
+        state = r[8] if r[8] else None
+
+        has_location = (lat is not None and lng is not None) or bool(location) or bool(district)
+        has_crops = bool(crops and len(crops) > 0)
+
+        # Requirement: If the farmer has neither crops nor location, skip them.
+        if not has_location and not has_crops:
+            continue
+
+        farmers.append({
+            "phone": phone,
+            "name": name,
+            "crops": crops,
+            "location": location,
+            "lat": lat,
+            "lng": lng,
+            "language": language,
+            "district": district,
+            "state": state,
+        })
+
+    return farmers
