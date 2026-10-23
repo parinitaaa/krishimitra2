@@ -17,3 +17,6 @@ onnxruntime
 ultralytics
 python-dotenv
 psycopg
+pandas
+scikit-learn
+joblib

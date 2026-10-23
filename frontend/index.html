@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KrishiMitra – Farm Intelligence</title>
+  <meta name="description" content="Treatment plans, disease progression, and live mandi prices for Indian farmers." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <nav class="navbar" id="navbar">
+    <div class="nav-brand">
+      <span class="nav-logo">🌿</span>
+      <span class="nav-title">KrishiMitra</span>
+      <span class="nav-sub">कृषि मित्र</span>
+    </div>
+    <div class="nav-links">
+      <a href="#detect" class="nav-link" data-tab="detect">Detect</a>
+      <a href="#diagnose" class="nav-link" data-tab="diagnose">Diagnose</a>
+      <a href="#treatment" class="nav-link" data-tab="treatment">Treatment</a>
+      <a href="#severity" class="nav-link" data-tab="severity">Severity</a>
+      <a href="#progression" class="nav-link" data-tab="progression">Progression</a>
+      <a href="#crops" class="nav-link" data-tab="crops">Crops</a>
+      <a href="#market" class="nav-link" data-tab="market">Market</a>
+    </div>
+    <div class="nav-status">
+      <span class="status-dot" id="apiStatus"></span>
+      <span id="apiStatusText">Connecting…</span>
+    </div>
+  </nav>
+
+  <section class="hero" id="hero">
+    <div class="hero-overlay"></div>
+    <div class="hero-content">
+      <div class="hero-badge">YOLO + live mandi APIs online</div>
+      <h1 class="hero-title">KrishiMitra<br /><span class="gradient-text">Farm Intelligence</span></h1>
+      <p class="hero-subtitle">Scan leaves for disease, get treatment &amp; progression, and check mandi prices — all from working endpoints.</p>
+      <button class="btn-primary hero-cta" onclick="switchTab('detect')">Scan a leaf →</button>
+    </div>
+    <div class="hero-visual">
+      <div class="floating-card fc1">🔬 YOLO disease detect</div>
+      <div class="floating-card fc2">💊 Remedies &amp; severity</div>
+      <div class="floating-card fc3">📈 Live mandi prices</div>
+    </div>
+  </section>
+
+  <main class="app-container" id="appContainer">
+
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-detect" onclick="switchTab('detect')">
+        <span class="tab-icon">🔬</span> Detect
+      </button>
+      <button class="tab-btn" id="tab-diagnose" onclick="switchTab('diagnose')">
+        <span class="tab-icon">🧬</span> Diagnose
+      </button>
+      <button class="tab-btn" id="tab-treatment" onclick="switchTab('treatment')">
+        <span class="tab-icon">💊</span> Treatment
+      </button>
+      <button class="tab-btn" id="tab-severity" onclick="switchTab('severity')">
+        <span class="tab-icon">📊</span> Severity
+      </button>
+      <button class="tab-btn" id="tab-progression" onclick="switchTab('progression')">
+        <span class="tab-icon">📅</span> Progression
+      </button>
+      <button class="tab-btn" id="tab-crops" onclick="switchTab('crops')">
+        <span class="tab-icon">🌾</span> Crops
+      </button>
+      <button class="tab-btn" id="tab-market" onclick="switchTab('market')">
+        <span class="tab-icon">📈</span> Market
+      </button>
+    </div>
+
+    <!-- DETECT -->
+    <div class="tab-panel active" id="panel-detect">
+      <div class="panel-header">
+        <h2>🔬 Disease Detection</h2>
+        <p>Upload a plant leaf image — YOLO finds diseased regions and labels.</p>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <h3>Scan Leaf Image</h3>
+          <span class="badge badge-blue">POST /detect/</span>
+        </div>
+        <div class="upload-zone" id="detectUploadZone" ondragover="handleDragOver(event)" ondrop="handleDrop(event, 'detectFile')" onclick="document.getElementById('detectFile').click()">
+          <div class="upload-icon">📸</div>
+          <p class="upload-text">Drag &amp; drop a plant image or <span class="upload-link">browse</span></p>
+          <p class="upload-hint">JPG, PNG, WEBP</p>
+          <input type="file" id="detectFile" accept="image/*" style="display:none" onchange="previewImage('detectFile','detectPreview','detectUploadZone','detectPreviewContainer')" />
+        </div>
+        <div class="preview-container" id="detectPreviewContainer" style="display:none">
+          <img id="detectPreview" class="img-preview" alt="Preview" />
+          <button class="btn-clear" type="button" onclick="clearUpload('detectFile','detectPreview','detectPreviewContainer','detectUploadZone')">✕</button>
+        </div>
+        <button class="btn-primary" onclick="runDetect()">Detect Disease</button>
+        <div id="detectResult" class="result-area"></div>
+      </div>
+    </div>
+
+    <!-- DIAGNOSE -->
+    <div class="tab-panel" id="panel-diagnose">
+      <div class="panel-header">
+        <h2>🧬 Full Diagnosis</h2>
+        <p>Runs YOLO once, then returns severity + treatment in a single call.</p>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <h3>Diagnose Image</h3>
+          <span class="badge badge-purple">POST /diagnose/full</span>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Plant Image</label>
+            <div class="upload-zone small" id="diagnoseUploadZone" ondragover="handleDragOver(event)" ondrop="handleDrop(event, 'diagnoseFile')" onclick="document.getElementById('diagnoseFile').click()">
+              <span>📸 Click to upload</span>
+              <input type="file" id="diagnoseFile" accept="image/*" style="display:none" onchange="previewImage('diagnoseFile','diagnosePreview','diagnoseUploadZone','diagnosePreviewContainer')" />
+            </div>
+            <div class="preview-container" id="diagnosePreviewContainer" style="display:none">
+              <img id="diagnosePreview" class="img-preview small" alt="Preview" />
+              <button class="btn-clear" type="button" onclick="clearUpload('diagnoseFile','diagnosePreview','diagnosePreviewContainer','diagnoseUploadZone')">✕</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="diagnoseDisease">Disease name</label>
+            <select id="diagnoseDisease" class="form-input"></select>
+            <label for="diagnoseCustom" style="margin-top:12px">Or custom / YOLO label</label>
+            <input type="text" id="diagnoseCustom" class="form-input" placeholder="Filled from Detect if available" />
+            <label for="diagnoseLocation" style="margin-top:12px">Location</label>
+            <input type="text" id="diagnoseLocation" class="form-input" value="Karnataka, India" />
+            <label class="checkbox-label" style="margin-top:12px">
+              <input type="checkbox" id="diagnoseForceAI" />
+              Force AI treatment lookup
+            </label>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="runDiagnose()">Run Full Diagnose</button>
+        <div id="diagnoseResult" class="result-area"></div>
+      </div>
+    </div>
+
+    <!-- TREATMENT -->
+    <div class="tab-panel" id="panel-treatment">
+      <div class="panel-header">
+        <h2>💊 Treatment Plan</h2>
+        <p>Look up remedies from the disease database, or force AI for unknown names.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Get Remedies</h3>
+          <span class="badge badge-green">POST /treatment/</span>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="treatmentDisease">Disease</label>
+            <select id="treatmentDisease" class="form-input"></select>
+          </div>
+          <div class="form-group flex-1">
+            <label for="treatmentCustom">Or type a custom name</label>
+            <input type="text" id="treatmentCustom" class="form-input" placeholder="Overrides dropdown if filled" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="treatmentLocation">Location</label>
+            <input type="text" id="treatmentLocation" class="form-input" value="Karnataka, India" />
+          </div>
+          <div class="form-group flex-1" style="display:flex;align-items:flex-end">
+            <label class="checkbox-label">
+              <input type="checkbox" id="treatmentForceAI" />
+              Force AI (skip static DB)
+            </label>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="runTreatment()">Get Treatment Plan</button>
+        <div id="treatmentResult" class="result-area"></div>
+      </div>
+    </div>
+
+    <!-- SEVERITY -->
+    <div class="tab-panel" id="panel-severity">
+      <div class="panel-header">
+        <h2>📊 Severity Calculator</h2>
+        <p>Estimate severity from image size, bounding box, and detection confidence (no YOLO required).</p>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Calculate Severity</h3>
+          <span class="badge badge-orange">POST /severity/</span>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="severityDisease">Disease</label>
+            <select id="severityDisease" class="form-input"></select>
+          </div>
+          <div class="form-group flex-half">
+            <label for="severityW">Image Width</label>
+            <input type="number" id="severityW" class="form-input" value="640" />
+          </div>
+          <div class="form-group flex-half">
+            <label for="severityH">Image Height</label>
+            <input type="number" id="severityH" class="form-input" value="480" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Bounding Box</label>
+          <div class="bbox-inputs">
+            <input type="number" id="bx1" class="form-input" placeholder="x1" value="120" />
+            <input type="number" id="by1" class="form-input" placeholder="y1" value="80" />
+            <input type="number" id="bx2" class="form-input" placeholder="x2" value="340" />
+            <input type="number" id="by2" class="form-input" placeholder="y2" value="290" />
+            <input type="number" id="bconf" class="form-input" placeholder="confidence" value="0.87" step="0.001" />
+          </div>
+        </div>
+        <button class="btn-primary" onclick="runSeverity()">Calculate Severity</button>
+        <div id="severityResult" class="result-area"></div>
+      </div>
+    </div>
+
+    <!-- PROGRESSION -->
+    <div class="tab-panel" id="panel-progression">
+      <div class="panel-header">
+        <h2>📅 Disease Progression</h2>
+        <p>7-day untreated spread forecast from current infected area %.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Predict Spread</h3>
+          <span class="badge badge-red">POST /progression/</span>
+        </div>
+        <div class="form-row">
+          <div class="form-group flex-1">
+            <label for="progressionDisease">Disease</label>
+            <select id="progressionDisease" class="form-input"></select>
+          </div>
+          <div class="form-group flex-half">
+            <label for="progressionBbox">Current infected %</label>
+            <input type="number" id="progressionBbox" class="form-input" value="34.2" step="0.1" min="0" max="100" />
+          </div>
+        </div>
+        <button class="btn-primary" onclick="runProgression()">Predict 7-Day Progression</button>
+        <div id="progressionResult" class="result-area"></div>
+      </div>
+    </div>
+
+    <!-- CROPS -->
+    <div class="tab-panel" id="panel-crops">
+      <div class="panel-header">
+        <h2>🌾 Crop Recommendation</h2>
+        <p>Enter soil and climate values to see the model's top crop predictions.</p>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <h3>Soil &amp; Climate Inputs</h3>
+          <span class="badge badge-green">POST /api/crops/recommend</span>
+        </div>
+        <div class="form-grid crop-form-grid">
+          <div class="form-group">
+            <label for="cropN">Nitrogen (N)</label>
+            <input type="number" id="cropN" class="form-input" value="90" min="0" max="300" step="1" />
+          </div>
+          <div class="form-group">
+            <label for="cropP">Phosphorus (P)</label>
+            <input type="number" id="cropP" class="form-input" value="42" min="0" max="300" step="1" />
+          </div>
+          <div class="form-group">
+            <label for="cropK">Potassium (K)</label>
+            <input type="number" id="cropK" class="form-input" value="43" min="0" max="400" step="1" />
+          </div>
+          <div class="form-group">
+            <label for="cropTemp">Temperature (°C)</label>
+            <input type="number" id="cropTemp" class="form-input" value="24" min="-10" max="60" step="0.1" />
+          </div>
+          <div class="form-group">
+            <label for="cropHumidity">Relative humidity (%)</label>
+            <input type="number" id="cropHumidity" class="form-input" value="80" min="0" max="100" step="0.1" />
+          </div>
+          <div class="form-group">
+            <label for="cropPh">Soil pH</label>
+            <input type="number" id="cropPh" class="form-input" value="6.5" min="0" max="14" step="0.1" />
+          </div>
+          <div class="form-group">
+            <label for="cropRainfall">Rainfall (mm)</label>
+            <input type="number" id="cropRainfall" class="form-input" value="200" min="0" max="3000" step="1" />
+          </div>
+        </div>
+        <p class="card-desc">Demo values are prefilled. Replace with actual measurements before interpreting results.</p>
+        <button class="btn-primary" onclick="runCropRecommend()">Recommend crops</button>
+        <div id="cropsResult" class="result-area"></div>
+      </div>
+    </div>
+
+    <!-- MARKET -->
+    <div class="tab-panel" id="panel-market">
+      <div class="panel-header">
+        <h2>📈 Market Intelligence</h2>
+        <p>Live mandi prices, nearby markets, and short-term price forecasts.</p>
+      </div>
+
+      <div class="market-grid">
+        <div class="card">
+          <div class="card-header">
+            <h3>Live Mandi Prices</h3>
+            <span class="badge badge-blue">GET /market/prices</span>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="pricesCommodity">Commodity</label>
+              <input type="text" id="pricesCommodity" class="form-input" value="Tomato" />
+            </div>
+            <div class="form-group flex-1">
+              <label for="pricesState">State (optional)</label>
+              <input type="text" id="pricesState" class="form-input" placeholder="e.g. Karnataka" />
+            </div>
+          </div>
+          <button class="btn-primary" onclick="runPrices()">Fetch Prices</button>
+          <div id="pricesResult" class="result-area"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Nearby Mandis</h3>
+            <span class="badge badge-purple">POST /market/nearby</span>
+          </div>
+          <div class="form-group">
+            <label for="nearbyLocation">Your Location</label>
+            <input type="text" id="nearbyLocation" class="form-input" value="Mysore, Karnataka" />
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="nearbyCommodity">Commodity</label>
+              <input type="text" id="nearbyCommodity" class="form-input" value="Tomato" />
+            </div>
+            <div class="form-group flex-half">
+              <label for="nearbyRadius">Radius (km)</label>
+              <input type="number" id="nearbyRadius" class="form-input" value="300" />
+            </div>
+            <div class="form-group flex-half">
+              <label for="nearbyTopN">Top N</label>
+              <input type="number" id="nearbyTopN" class="form-input" value="3" />
+            </div>
+          </div>
+          <button class="btn-primary" onclick="runNearby()">Find Best Markets</button>
+          <div id="nearbyResult" class="result-area"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Price Prediction</h3>
+            <span class="badge badge-orange">GET /market/predict</span>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="predictCommodity">Commodity</label>
+              <input type="text" id="predictCommodity" class="form-input" value="Tomato" />
+            </div>
+            <div class="form-group flex-1">
+              <label for="predictMarket">Market</label>
+              <input type="text" id="predictMarket" class="form-input" value="Mysore" />
+            </div>
+          </div>
+          <button class="btn-primary" onclick="runPredict()">Predict Prices</button>
+          <div id="predictResult" class="result-area"></div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer-content">
+      <div class="footer-brand">
+        <span class="nav-logo">🌿</span>
+        <span>KrishiMitra v2.0.0</span>
+      </div>
+      <div class="footer-links">
+        <a href="http://localhost:8000/docs" target="_blank" class="footer-link">API Docs</a>
+        <a href="http://localhost:8000/health" target="_blank" class="footer-link">Health</a>
+      </div>
+      <div class="footer-note">Showing only verified working endpoints</div>
+    </div>
+  </footer>
+
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-card">
+      <div class="spinner"></div>
+      <p id="loadingText">Working…</p>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

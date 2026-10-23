@@ -20,6 +20,7 @@ from services.db import Base, engine
 from services.price_fetcher import run_daily_fetch
 from outbreak.routes import router as outbreak_router
 from outbreak.scheduler import check_new_detections
+from crop_recommendation.crop_api import router as crop_router
 import services.whatsapp_service as ws
 
 _executor = ThreadPoolExecutor(max_workers=1)
@@ -69,6 +70,7 @@ app.include_router(progression_router, prefix="/progression", tags=["Progression
 app.include_router(soil_router, prefix="/soil", tags=["Soil"])
 app.include_router(market_router, prefix="/market", tags=["Market"])
 app.include_router(outbreak_router, prefix="/outbreak")
+app.include_router(crop_router)
 
 @app.get("/health")
 def health():
