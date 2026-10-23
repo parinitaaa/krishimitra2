@@ -143,7 +143,7 @@ def get_mandi_price(crop: str, state: Optional[str] = None) -> dict:
                             "modal_price": r.get("modal_price"),
                             "min_price": r.get("min_price"),
                             "max_price": r.get("max_price"),
-                            "date": str(r.get("arrival_date")),
+                            "date":  str(r.get("date") or r.get("arrival_date") or ""),
                         }
                         for r in rows[:5]
                     ],
