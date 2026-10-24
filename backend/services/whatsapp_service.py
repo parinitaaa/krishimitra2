@@ -156,14 +156,19 @@ async def handle_incoming_message(form_data: dict) -> str:
 
     # ── 4. Normal agent flow ─────────────────────────────────────────────────
     disease_result = None
-    if image_path and os.path.exists(CLASSIFIER_PATH):
-        disease_result = diagnose_image(
-            image_path=image_path,
-            classifier_path=CLASSIFIER_PATH,
-            detector_path=DETECTOR_PATH if os.path.exists(DETECTOR_PATH) else None,
-        )
-    elif image_path:
-        print(f"[WhatsApp] Missing classifier at {CLASSIFIER_PATH}")
+    # Use the unified detection service (same logic as /detect API) to identify disease from the uploaded image
+    if image_path:
+        try:
+            from services.detect_service import run_detection
+            detection_output = await run_detection(image_path)
+            # If detection succeeded and returned at least one label, use the top label as the disease result
+            if detection_output.get("status") == "detected" and detection_output.get("detections"):
+                disease_result = detection_output["detections"][0]["yolo_label"]
+            else:
+                disease_result = None
+        except Exception as e:
+            print(f"[WhatsApp] Detection service error: {e}")
+            disease_result = None
 
     if disease_result:
         save_farmer_diagnosis(phone, disease_result, body)
