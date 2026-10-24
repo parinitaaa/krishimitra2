@@ -1,0 +1,31 @@
+﻿agent\diagnose.py:5: Model: weights/best.onnx (preferred) | weights/best.pt (fallback)
+agent\diagnose.py:48: ONNX_PATH = _BACKEND / "weights" / "best.onnx"
+agent\diagnose.py:49: PT_PATH = _BACKEND / "weights" / "best.pt"
+agent\diagnose.py:140: _yolo_model_path: str = ""
+agent\diagnose.py:146: Load YOLO model once. Configured path from config.DISEASE_MODEL_PATH (default weights/best.onnx),
+agent\diagnose.py:147: falling back to weights/best.pt if missing or failing.
+agent\diagnose.py:148: Returns (model, class_names, model_path_str).
+agent\diagnose.py:150: global _yolo_model, _class_names, _yolo_model_path
+agent\diagnose.py:152: return _yolo_model, _class_names, _yolo_model_path
+agent\diagnose.py:157: from config import DISEASE_MODEL_PATH
+agent\diagnose.py:159: DISEASE_MODEL_PATH = "weights/best.onnx"
+agent\diagnose.py:161: primary_path = Path(DISEASE_MODEL_PATH)
+agent\diagnose.py:165: fallback_path = _BACKEND / "weights" / "best.pt"
+agent\diagnose.py:180: _yolo_model_path = str(p)
+agent\diagnose.py:326: classifier_path: Optional[str] = None,
+agent\diagnose.py:327: detector_path: Optional[str] = None,
+agent\diagnose.py:341: model, class_names, model_path = _load_yolo()
+scripts\model_check.py:9: ONNX_PATH = ROOT / "weights" / "best.onnx"
+services\yolo_service.py:5: MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "best.pt")
+services\yolo_service.py:8: print("Disease model active:", MODEL_PATH)
+services\yolo_service.py:13: if not Path(MODEL_PATH).exists():
+services\yolo_service.py:15: f"Model not found at '{MODEL_PATH}'. "
+services\yolo_service.py:16: "Set YOLO_MODEL_PATH in your .env or place best.pt in the project root."
+services\yolo_service.py:18: _model = YOLO(MODEL_PATH)
+tests\test_diagnose.py:78: cls.model, cls.class_names, cls.model_path = _load_yolo()
+tests\test_model_names.py:19: from config import MODEL_PATH
+tests\test_model_names.py:20: model_path = Path(MODEL_PATH) if Path(MODEL_PATH).is_absolute() else backend_dir / MODEL_PATH
+tests\test_model_names.py:21: self.assertTrue(model_path.exists(), f"Model not found at {model_path}")
+tests\test_model_names.py:23: model = YOLO(str(model_path))
+config.py:8: MODEL_PATH = os.getenv("YOLO_MODEL_PATH") or os.getenv("MODEL_PATH", "weights/best.pt")
+config.py:14: DISEASE_MODEL_PATH = os.getenv("DISEASE_MODEL_PATH", "weights/best.onnx")

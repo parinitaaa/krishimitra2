@@ -1,42 +1,13 @@
-import asyncio
-from services.db import SessionLocal
-from outbreak.service import handle_new_detection
-from sqlalchemy import text
+"""
+outbreak/scheduler.py
 
-def _fetch_unprocessed_outbreaks():
-    with SessionLocal() as db:
-        return db.execute(text("""
-            SELECT * FROM detections
-            WHERE severity > 5
-            AND spread = true
-            AND processed = false
-        """)).mappings().all()
-
-def _mark_detection_processed(detection_id: int):
-    with SessionLocal() as db:
-        db.execute(text("UPDATE detections SET processed = true WHERE id = :id"), {"id": detection_id})
-        db.commit()
-
-async def check_new_detections():
-    result = await asyncio.to_thread(_fetch_unprocessed_outbreaks)
-    if not result:
-        return
-
-    print(f"🔍 Found {len(result)} unprocessed outbreaks")
-
-    with SessionLocal() as db:
-        for row in result:
-            print("🔥 Outbreak detected:", row["disease_name"])
-            await handle_new_detection(db, dict(row))
-            await asyncio.to_thread(_mark_detection_processed, row["id"])
+Outbreak evaluation is event-driven: schedule_outbreak_evaluation() is called
+from whatsapp_service when a disease case is created or severity is reported.
+The legacy 100-second polling job on the detections table is removed per DEMO-O.
+"""
 
 
 def register_jobs(sched):
-    """Registers outbreak monitoring jobs with the application scheduler."""
-    sched.add_job(
-        check_new_detections,
-        trigger="interval",
-        seconds=100,
-        id="outbreak_monitor",
-        replace_existing=True,
-    )
+    """No polling jobs — outbreak alerts are event-driven via disease_cases."""
+    pass
+

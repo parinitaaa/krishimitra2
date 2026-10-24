@@ -11,3 +11,5 @@ UPLOAD_DIR    = "uploads"
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL")  # no default on purpose
 
+DISEASE_MODEL_PATH = os.getenv("DISEASE_MODEL_PATH", "weights/best.onnx")
+

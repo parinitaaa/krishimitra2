@@ -544,49 +544,8 @@ def add_farmer_crop(phone: str, crop: str):
 
 
 def record_detection_if_outbreak(phone: str, disease_result: dict) -> None:
-    if not disease_result or disease_result.get("error"):
-        return
-    sev = disease_result.get("severity_score")
-    spreads = disease_result.get("spread")
-    if sev is None or sev <= 5 or not spreads:
-        return
-
-    pid = normalize_phone(phone)
-    get_farmer(pid)
-
-    disease_name = disease_result.get("disease") or "Unknown"
-    crop_type = disease_result.get("crop") or "Unknown"
-    loc = get_farmer_location(pid)
-    lat = loc["lat"] if loc else None
-    lng = loc["lng"] if loc else None
-
-    with SessionLocal() as db:
-        db.execute(
-            text(
-                """
-                INSERT INTO detections
-                    (phone, disease_name, crop_type, severity, lat, lng, spread)
-                VALUES
-                    (:phone, :disease_name, :crop_type, :severity, :lat, :lng, :spread)
-                """
-            ),
-            {
-                "phone": pid,
-                "disease_name": disease_name,
-                "crop_type": crop_type,
-                "severity": int(sev),
-                "lat": lat,
-                "lng": lng,
-                "spread": True,
-            },
-        )
-        db.commit()
-
-    try:
-        from scheduler import schedule_disease_followup_series
-        schedule_disease_followup_series(pid, disease_name, crop_type)
-    except Exception as e:
-        print(f"[FarmerStore] schedule_disease_followup_series: {e}")
+    """Legacy detection recorder — writing to detections table is stopped per requirement."""
+    return
 
 
 def save_farmer_diagnosis(phone: str, disease_result: dict, user_message: str) -> None:
@@ -652,6 +611,7 @@ def create_case(
     lng: float = None,
     spread_modes: list[str] = None,
     image_url: str = None,
+    next_followup_at = None,
 ) -> uuid.UUID:
     pid = normalize_phone(phone)
     case_id = uuid.uuid4()
@@ -661,11 +621,11 @@ def create_case(
                 INSERT INTO disease_cases (
                     id, phone, crop, disease, status, confidence,
                     severity_level, severity_score, severity_source,
-                    lat, lng, spread_modes, image_url, created_at
+                    lat, lng, spread_modes, image_url, next_followup_at, created_at
                 ) VALUES (
                     :id, :phone, :crop, :disease, 'open', :confidence,
                     :severity_level, :severity_score, :severity_source,
-                    :lat, :lng, :spread_modes, :image_url, NOW()
+                    :lat, :lng, :spread_modes, :image_url, :next_followup_at, NOW()
                 )
             """),
             {
@@ -681,6 +641,7 @@ def create_case(
                 "lng": lng,
                 "spread_modes": spread_modes or [],
                 "image_url": image_url,
+                "next_followup_at": next_followup_at,
             },
         )
         db.commit()

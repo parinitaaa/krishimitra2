@@ -5,6 +5,7 @@ from ultralytics import YOLO
 MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "best.pt")
 _model = None
 
+print("Disease model active:", MODEL_PATH)
 
 def get_model() -> YOLO:
     global _model

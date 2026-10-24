@@ -17,3 +17,12 @@ onnxruntime
 ultralytics
 python-dotenv
 psycopg
+numpy==2.2.6
+onnx==1.23.2
+onnxruntime==1.31.0
+opencv-python==4.13.0.92
+opencv-python-headless==4.10.0.84
+torch==2.10.0
+torchvision==0.25.0
+ultralytics==8.4.21
+ultralytics-thop==2.0.18

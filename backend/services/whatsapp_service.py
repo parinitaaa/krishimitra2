@@ -17,7 +17,12 @@ load_dotenv()
 
 from config import GROQ_MODEL
 from agent.agent import process_message
-from agent.diagnose import diagnose_image
+from agent.diagnose import (
+    diagnose_image,
+    SUPPORTED_CROPS,
+    normalize_crop_text,
+    DISEASE_DB,
+)
 from agent.guardrails import check_message, check_image, check_crisis
 from services.location_state import _pending_location
 from services.geocode_service import reverse_geocode, geocode_location
@@ -30,8 +35,6 @@ from farmer_store import (
     normalize_phone,
     get_farmer_location,
     save_farmer_location,
-    record_detection_if_outbreak,
-    save_farmer_diagnosis,
     update_farmer_profile,
     set_farmer_language,
     set_onboarding_step,
@@ -39,6 +42,8 @@ from farmer_store import (
     set_state,
     clear_state,
     add_chat,
+    create_case,
+    update_case,
 )
 
 from services.language_onboarding import handle_language_selection
@@ -51,13 +56,6 @@ FROM_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
 twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 TEMP_DIR  = tempfile.gettempdir()
-
-AGENT_DIR = Path(__file__).resolve().parent.parent / "agent"
-_MODEL_DIR = AGENT_DIR / "model"
-if not (_MODEL_DIR / "classifier.onnx").exists():
-    _MODEL_DIR = AGENT_DIR / "models"
-CLASSIFIER_PATH = str(_MODEL_DIR / "classifier.onnx")
-DETECTOR_PATH   = str(_MODEL_DIR / "detector.onnx")
 
 
 def format_for_whatsapp(text: str) -> str:
@@ -321,8 +319,377 @@ async def send_message(phone: str, text: str, retries: int = 3) -> bool:
 
 
 async def send_proactive_message(phone: str, message: str) -> bool:
-    """Wrapper using the unified send_message path."""
-    return await send_message(phone, message)
+    """Wrapper using the unified send_message path with BROADCAST_ALLOWLIST guard."""
+    clean_phone = normalize_phone(phone)
+    allowlist_raw = os.getenv("BROADCAST_ALLOWLIST")
+    if allowlist_raw and allowlist_raw.strip():
+        allowed_numbers = {
+            normalize_phone(num.strip())
+            for num in allowlist_raw.split(",")
+            if num.strip()
+        }
+        if clean_phone not in allowed_numbers:
+            print(f"[WhatsApp] [ALLOWLIST_SKIP] Phone {clean_phone} is not in BROADCAST_ALLOWLIST. Skipping proactive send.")
+            return False
+
+    return await send_message(clean_phone, message)
+
+
+def _state_expired(updated_at, max_minutes: int = 30) -> bool:
+    """True if conversation_state is older than max_minutes."""
+    if not updated_at:
+        return False
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    return (now - updated_at).total_seconds() > max_minutes * 60
+
+
+async def _handle_incoming_photo(phone: str, media_url: str, content_type: str, lang: str, farmer: dict) -> None:
+    """Handle incoming plant leaf photo for diagnosis with crop gate."""
+    if farmer.get("onboarding_step") != "done":
+        await send_message(phone, get_string("photo_during_onboarding", lang))
+        return
+
+    img_check = check_image(content_type, lang)
+    if not img_check.allowed:
+        await send_message(phone, img_check.reply)
+        return
+
+    # Immediate acknowledgement
+    await send_message(phone, get_string("diag_checking", lang))
+
+    try:
+        image_path = await _download_image(media_url, content_type)
+    except Exception as e:
+        print(f"[WhatsApp] Photo download error: {e}")
+        await send_message(phone, get_string("diag_no_leaf", lang))
+        return
+
+    # Crop confirmation gate
+    farmer_crops = farmer.get("crops") or []
+    supported_matches = []
+    for c in farmer_crops:
+        norm = normalize_crop_text(str(c))
+        if norm and norm in SUPPORTED_CROPS:
+            supported_matches.append(norm)
+
+    if len(supported_matches) == 1:
+        suggested = supported_matches[0]
+        ask_msg = get_string("diag_ask_crop_single", lang, crop=suggested.title())
+        await asyncio.to_thread(
+            set_state,
+            phone,
+            flow="disease_crop",
+            step="confirm_single",
+            data={
+                "image_path": image_path,
+                "suggested_crop": suggested,
+                "single_crop": True,
+            },
+        )
+        await send_message(phone, ask_msg)
+    else:
+        ask_msg = get_string("diag_ask_crop_multi", lang)
+        await asyncio.to_thread(
+            set_state,
+            phone,
+            flow="disease_crop",
+            step="ask_which",
+            data={
+                "image_path": image_path,
+                "single_crop": False,
+            },
+        )
+        await send_message(phone, ask_msg)
+
+
+async def _handle_disease_crop_reply(phone: str, body: str, lang: str, farmer: dict, state: dict) -> bool:
+    """
+    Handle response to crop confirmation. If message is unrelated, answer via agent and keep flow.
+    """
+    data = state.get("data") or {}
+    image_path = data.get("image_path")
+    step = state.get("step")
+
+    quick_reply = check_deterministic_reply(body, lang)
+    if quick_reply:
+        await send_message(phone, quick_reply)
+        return True
+
+    affirmatives = {
+        "yes", "y", "yeah", "yep", "sure", "ok", "okay",
+        "haan", "ha", "bilkul", "sahi", "houdu", "haudu", "sari",
+        "ಹೌದು", "ಹಾ", "ಸರಿ", "हाँ", "हाँ सेट करें", "सेट करो"
+    }
+    negatives = {
+        "no", "n", "nope", "nahi", "illa", "bedi", "ಇಲ್ಲ", "ಬೇಡ", "नहीं", "मत करो"
+    }
+
+    clean_body = body.strip().lower()
+    confirmed_crop = None
+
+    if step == "confirm_single":
+        if clean_body in affirmatives or any(clean_body == a for a in affirmatives):
+            confirmed_crop = data.get("suggested_crop")
+        elif clean_body in negatives or any(clean_body == n for n in negatives):
+            data["single_crop"] = False
+            await asyncio.to_thread(set_state, phone, flow="disease_crop", step="ask_which", data=data)
+            await send_message(phone, get_string("diag_ask_crop_multi", lang))
+            return True
+        else:
+            norm = normalize_crop_text(body)
+            if norm:
+                confirmed_crop = norm
+            elif any(w in clean_body for w in ["other", "अन्य", "ಇತರ", "ಬೇರೆ"]):
+                confirmed_crop = "other"
+            else:
+                reply = await process_message(farmer_id=phone, message=body)
+                await send_message(phone, reply)
+                return True
+    else:  # ask_which
+        norm = normalize_crop_text(body)
+        if norm:
+            confirmed_crop = norm
+        elif any(w in clean_body for w in ["other", "अन्य", "ಇತರ", "ಬೇರೆ"]):
+            confirmed_crop = "other"
+        else:
+            reply = await process_message(farmer_id=phone, message=body)
+            await send_message(phone, reply)
+            return True
+
+    if not image_path or not os.path.exists(image_path):
+        await asyncio.to_thread(clear_state, phone)
+        await send_message(phone, get_string("diag_no_leaf", lang))
+        return True
+
+    if confirmed_crop == "other" or confirmed_crop not in SUPPORTED_CROPS:
+        await asyncio.to_thread(clear_state, phone)
+        try:
+            os.remove(image_path)
+        except Exception:
+            pass
+        await send_message(phone, get_string("diag_unsupported_crop", lang))
+        return True
+
+    # Run diagnosis with CROP FILTER
+    from agent.tools import active_farmer_phone
+    token = active_farmer_phone.set(phone)
+    try:
+        diag_res = await asyncio.to_thread(
+            diagnose_image,
+            image_path=image_path,
+            confirmed_crop=confirmed_crop,
+            phone=phone,
+        )
+    finally:
+        active_farmer_phone.reset(token)
+        try:
+            os.remove(image_path)
+        except Exception:
+            pass
+
+    status = diag_res.get("status")
+
+    if status == "no_leaf":
+        await asyncio.to_thread(clear_state, phone)
+        await send_message(phone, get_string("diag_no_leaf", lang))
+        return True
+    elif status == "wrong_crop":
+        await asyncio.to_thread(clear_state, phone)
+        await send_message(phone, get_string("diag_wrong_crop", lang, crop=confirmed_crop.title()))
+        return True
+    elif status == "low_confidence":
+        await asyncio.to_thread(clear_state, phone)
+        await send_message(phone, get_string("diag_low_confidence", lang))
+        return True
+    elif status == "healthy":
+        await asyncio.to_thread(clear_state, phone)
+        await send_message(phone, get_string("diag_healthy", lang, crop=confirmed_crop.title()))
+        return True
+    elif status == "no_disease_model":
+        await asyncio.to_thread(clear_state, phone)
+        await send_message(phone, get_string("diag_no_disease_model", lang, crop=confirmed_crop.title()))
+        return True
+    elif status == "ok":
+        from datetime import datetime, time, timedelta, timezone
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(ist)
+        next_followup = datetime.combine(now_ist.date() + timedelta(days=1), time(9, 0), tzinfo=ist)
+
+        display_name = diag_res.get("display_name", diag_res.get("disease", ""))
+        conf_num = diag_res.get("confidence_num", 0.0)
+        conf_pct = diag_res.get("confidence", "0%")
+        db_key = diag_res.get("db_key", "")
+        db_entry = diag_res.get("db_entry", {})
+        spread_modes = diag_res.get("spread_modes", [])
+
+        case_id = await asyncio.to_thread(
+            create_case,
+            phone=phone,
+            crop=confirmed_crop,
+            disease=display_name,
+            confidence=conf_num,
+            severity_level="Unknown",
+            severity_score=0,
+            severity_source="unknown",
+            lat=farmer.get("lat"),
+            lng=farmer.get("lng"),
+            spread_modes=spread_modes,
+            next_followup_at=next_followup,
+        )
+
+        try:
+            from outbreak.service import schedule_outbreak_evaluation
+            schedule_outbreak_evaluation(case_id)
+        except (ImportError, AttributeError, Exception) as e:
+            pass
+
+        org_rems = db_entry.get("remedies", {}).get("organic", [])
+        first_step = org_rems[0] if org_rems else (
+            "प्रभावित पत्ते हटाएँ" if lang == "hindi" else
+            "ಬಾಧಿತ ಎಲೆಗಳನ್ನು ತೆಗೆದುಹಾಕಿ" if lang == "kannada" else
+            "Remove and destroy affected leaves immediately"
+        )
+        low_conf_note = get_string("diag_ok_low_conf_note", lang) if conf_num < 0.70 else ""
+
+        total_leaves = diag_res.get("total_leaves", 1)
+        diseased_leaves = diag_res.get("diseased_leaves", 1)
+
+        if total_leaves > 1:
+            msg = get_string(
+                "diag_ok_multi",
+                lang,
+                total=total_leaves,
+                diseased=diseased_leaves,
+                disease=display_name,
+                confidence=conf_pct,
+                low_conf_note=low_conf_note,
+                first_step=first_step,
+            )
+        else:
+            msg = get_string(
+                "diag_ok_single",
+                lang,
+                crop=confirmed_crop.title(),
+                disease=display_name,
+                confidence=conf_pct,
+                low_conf_note=low_conf_note,
+                first_step=first_step,
+            )
+
+        await asyncio.to_thread(
+            set_state,
+            phone,
+            flow="disease_severity",
+            step="ask_severity",
+            data={
+                "case_id": str(case_id),
+                "crop": confirmed_crop,
+                "db_key": db_key,
+                "display_name": display_name,
+            },
+        )
+        await send_message(phone, msg)
+        return True
+
+    return False
+
+
+async def _handle_disease_severity_reply(phone: str, body: str, lang: str, farmer: dict, state: dict) -> bool:
+    """
+    Handle severity answer: save farmer_reported severity and send treatment plan.
+    """
+    data = state.get("data") or {}
+    case_id = data.get("case_id")
+    db_key = data.get("db_key")
+    crop = data.get("crop", "")
+    display_name = data.get("display_name", "")
+
+    quick_reply = check_deterministic_reply(body, lang)
+    if quick_reply:
+        await send_message(phone, quick_reply)
+        return True
+
+    sb = body.strip().lower()
+    parsed_level = None
+    if any(k in sb for k in ["few", "1", "kuch", "kelavu", "mild", "कम", "कुछ", "ಕೆಲವು"]):
+        parsed_level = "Mild"
+    elif any(k in sb for k in ["most", "3", "zyada", "zyadatar", "bahut", "bahutek", "severe", "ज़्यादा", "ಬಹುತೇಕ", "ತೀವ್ರ"]):
+        parsed_level = "Severe"
+    elif any(k in sb for k in ["many", "2", "kafi", "sakashthu", "moderate", "काफ़ी", "ಸಾಕಷ್ಟು", "ಮಧ್ಯಮ"]):
+        parsed_level = "Moderate"
+
+    if not parsed_level:
+        reply = await process_message(farmer_id=phone, message=body)
+        await send_message(phone, reply)
+        return True
+
+    await asyncio.to_thread(
+        update_case,
+        case_id,
+        severity_level=parsed_level,
+        severity_source="farmer_reported",
+    )
+    try:
+        from outbreak.service import schedule_outbreak_evaluation
+        schedule_outbreak_evaluation(case_id)
+    except Exception as e:
+        print(f"[WhatsApp] Failed to schedule outbreak evaluation after severity reply: {e}")
+    await asyncio.to_thread(clear_state, phone)
+
+    db_entry = DISEASE_DB.get(db_key, {})
+    remedies = db_entry.get("remedies", {})
+    org_list = remedies.get("organic", [])
+    chem_list = remedies.get("chemical", [])
+
+    org_text = "\n• ".join([""] + org_list).strip() if org_list else "None specified"
+    chem_text = "\n• ".join([""] + chem_list).strip() if chem_list else "None specified"
+    dose_note = get_string("diag_dose_review_note", lang)
+
+    
+
+    prog_vals = {
+        "Mild": ("10%", "15%"),
+        "Moderate": ("30%", "50%"),
+        "Severe": ("60%", "85%"),
+    }.get(parsed_level, ("30%", "50%"))
+
+    severe_note = get_string("diag_treatment_severe_note", lang) if parsed_level == "Severe" else ""
+
+    treatment_msg = get_string(
+        "diag_treatment",
+        lang,
+        crop=crop.title(),
+        disease=display_name,
+        organic=org_text,
+        chemical=chem_text,
+        dose_note=dose_note,
+        day3=prog_vals[0],
+        day7=prog_vals[1],
+        severe_note=severe_note,
+    )
+
+    ack_msg = get_string("diag_severity_saved", lang)
+    await send_message(phone, f"{ack_msg}\n\n{treatment_msg}")
+
+    # Where to buy online (search links), sent as a separate short message
+    try:
+        from services.buy_links import products_from_remedies, format_buy_message
+        products = products_from_remedies(remedies)
+        if products:
+            await send_message(
+                phone,
+                format_buy_message(
+                    products,
+                    get_string("buy_header", lang),
+                    get_string("buy_note", lang),
+                ),
+            )
+    except Exception as e:
+        print(f"[WhatsApp] Buy-links failed (non-fatal): {e}")
+    return True
 
 
 async def handle_incoming_message(form_data: dict) -> None:
@@ -491,69 +858,81 @@ async def handle_incoming_message(form_data: dict) -> None:
         await send_message(phone, confirm_loc)
         return
 
-    # ── 4B. TWO-STEP PRICE ALERT CONFIRMATION & DETERMINISTIC REPLIES ──────────
+    # ── 4B. ACTIVE CONVERSATION FLOWS (Disease Crop / Severity / Price Alert) ──
     if not (num_media > 0 and media_url) and body:
-        # A. Pending price alert confirmation
         pending_state = await asyncio.to_thread(get_state, phone)
-        if pending_state and pending_state.get("flow") == "price_alert_confirm":
-            data = pending_state.get("data") or {}
-            clean_body = body.strip().lower()
-            affirmatives = {
-                "yes", "y", "yeah", "yep", "sure", "ok", "okay",
-                "haan", "ha", "bilkul", "sahi", "houdu", "haudu", "sari",
-                "ಹೌದು", "ಹಾ", "ಸರಿ", "हाँ", "हाँ सेट करें", "सेट करो"
-            }
-            negatives = {
-                "no", "n", "nope", "nahi", "illa", "bedi", "ಇಲ್ಲ", "ಬೇಡ", "नहीं", "मत करो"
-            }
-
-            if clean_body in affirmatives or any(clean_body == a for a in affirmatives):
+        if pending_state:
+            # 30-minute timeout for mid-flow state
+            if _state_expired(pending_state.get("updated_at"), max_minutes=30):
                 await asyncio.to_thread(clear_state, phone)
-                crop = data.get("crop", "crop")
-                target_price = float(data.get("target_price", 0))
-                direction = data.get("direction", "above")
-                market = data.get("market")
-
-                from agent.tools import create_price_alert, active_farmer_phone
-                token = active_farmer_phone.set(phone)
-                try:
-                    tool_res = await asyncio.to_thread(
-                        create_price_alert.invoke,
-                        {
-                            "crop": crop,
-                            "target_price": target_price,
-                            "direction": direction,
-                            "market": market,
-                        },
-                    )
-                finally:
-                    active_farmer_phone.reset(token)
-
-                if isinstance(tool_res, dict) and tool_res.get("status") == "created":
-                    dir_key = "price_direction_above" if direction == "above" else "price_direction_below"
-                    direction_word = get_string(dir_key, lang)
-                    success_msg = get_string(
-                        "alert_created_success",
-                        lang,
-                        crop=crop.title(),
-                        price=int(target_price),
-                        direction=direction_word,
-                    )
-                    await send_message(phone, success_msg)
-                    return
-                else:
-                    err_msg = (tool_res.get("message") if isinstance(tool_res, dict) else None) or "Unable to set alert at this time."
-                    await send_message(phone, f"Could not set alert: {err_msg}")
-                    return
-
-            elif clean_body in negatives or any(clean_body == n for n in negatives):
-                await asyncio.to_thread(clear_state, phone)
-                cancel_msg = get_string("alert_cancelled", lang)
-                await send_message(phone, cancel_msg)
-                return
             else:
-                # Unrelated message: clear state and fall through
-                await asyncio.to_thread(clear_state, phone)
+                flow = pending_state.get("flow")
+                if flow == "disease_crop":
+                    handled = await _handle_disease_crop_reply(phone, body, lang, farmer, pending_state)
+                    if handled:
+                        return
+                elif flow == "disease_severity":
+                    handled = await _handle_disease_severity_reply(phone, body, lang, farmer, pending_state)
+                    if handled:
+                        return
+                elif flow == "price_alert_confirm":
+                    data = pending_state.get("data") or {}
+                    clean_body = body.strip().lower()
+                    affirmatives = {
+                        "yes", "y", "yeah", "yep", "sure", "ok", "okay",
+                        "haan", "ha", "bilkul", "sahi", "houdu", "haudu", "sari",
+                        "ಹೌದು", "ಹಾ", "ಸರಿ", "हाँ", "हाँ सेट करें", "सेट करो"
+                    }
+                    negatives = {
+                        "no", "n", "nope", "nahi", "illa", "bedi", "ಇಲ್ಲ", "ಬೇಡ", "नहीं", "मत करो"
+                    }
+
+                    if clean_body in affirmatives or any(clean_body == a for a in affirmatives):
+                        await asyncio.to_thread(clear_state, phone)
+                        crop = data.get("crop", "crop")
+                        target_price = float(data.get("target_price", 0))
+                        direction = data.get("direction", "above")
+                        market = data.get("market")
+
+                        from agent.tools import create_price_alert, active_farmer_phone
+                        token = active_farmer_phone.set(phone)
+                        try:
+                            tool_res = await asyncio.to_thread(
+                                create_price_alert.invoke,
+                                {
+                                    "crop": crop,
+                                    "target_price": target_price,
+                                    "direction": direction,
+                                    "market": market,
+                                },
+                            )
+                        finally:
+                            active_farmer_phone.reset(token)
+
+                        if isinstance(tool_res, dict) and tool_res.get("status") == "created":
+                            dir_key = "price_direction_above" if direction == "above" else "price_direction_below"
+                            direction_word = get_string(dir_key, lang)
+                            success_msg = get_string(
+                                "alert_created_success",
+                                lang,
+                                crop=crop.title(),
+                                price=int(target_price),
+                                direction=direction_word,
+                            )
+                            await send_message(phone, success_msg)
+                            return
+                        else:
+                            err_msg = (tool_res.get("message") if isinstance(tool_res, dict) else None) or "Unable to set alert at this time."
+                            await send_message(phone, f"Could not set alert: {err_msg}")
+                            return
+
+                    elif clean_body in negatives or any(clean_body == n for n in negatives):
+                        await asyncio.to_thread(clear_state, phone)
+                        cancel_msg = get_string("alert_cancelled", lang)
+                        await send_message(phone, cancel_msg)
+                        return
+                    else:
+                        await asyncio.to_thread(clear_state, phone)
 
         # B. Price alert intent detection
         alert_intent = parse_price_alert_intent(body)
@@ -583,17 +962,10 @@ async def handle_incoming_message(form_data: dict) -> None:
             await send_message(phone, quick_reply)
             return
 
-    # ── 5. IMAGE MESSAGE (Disease Flow) ────────────────────────────────────────
-    image_path = None
+    # ── 5. IMAGE MESSAGE (Disease Diagnosis Flow) ──────────────────────────────
     if num_media > 0 and media_url:
-        img_check = check_image(content_type, lang)
-        if not img_check.allowed:
-            await send_message(phone, img_check.reply)
-            return
-        try:
-            image_path = await _download_image(media_url, content_type)
-        except Exception as e:
-            print(f"[WhatsApp] Image download failed: {e}")
+        await _handle_incoming_photo(phone, media_url, content_type, lang, farmer)
+        return
 
     # ── 6. GUARDRAIL CHECK ─────────────────────────────────────────────────────
     msg_check = check_message(body, lang)
@@ -601,36 +973,11 @@ async def handle_incoming_message(form_data: dict) -> None:
         await send_message(phone, msg_check.reply)
         return
 
-    # ── 7. DISEASE DIAGNOSIS OR AGENT REASONING ────────────────────────────────
-    disease_result = None
-    if image_path and os.path.exists(CLASSIFIER_PATH):
-        disease_result = await asyncio.to_thread(
-            diagnose_image,
-            image_path=image_path,
-            classifier_path=CLASSIFIER_PATH,
-            detector_path=DETECTOR_PATH if os.path.exists(DETECTOR_PATH) else None,
-        )
-    elif image_path:
-        print(f"[WhatsApp] Missing classifier at {CLASSIFIER_PATH}")
-
-    if disease_result:
-        await asyncio.to_thread(save_farmer_diagnosis, phone, disease_result, body)
-        await asyncio.to_thread(record_detection_if_outbreak, phone, disease_result)
-
-    # Note: extract_farmer_data is completely removed to prevent LLM touching identity.
-
+    # ── 7. AGENT REASONING ─────────────────────────────────────────────────────
     reply = await process_message(
         farmer_id=phone,
         message=body or "Hello",
-        disease_result=disease_result,
     )
-
-    if image_path and os.path.exists(image_path):
-        try:
-            os.remove(image_path)
-        except Exception:
-            pass
-
     await send_message(phone, reply)
 
 
@@ -661,7 +1008,7 @@ async def handle_location_for_mandi(
             commodity=commodity,
             radius_km=500,
             top_n=3,
-            state_filter=state_filter,
+            state=state_filter,
             db=db,
         )
 
@@ -688,10 +1035,7 @@ async def handle_location_for_mandi(
 
     return reply
 
-
 async def _download_image(media_url: str, content_type: str) -> str:
-    from services.twilio_media_download import download_twilio_media_sync
-
     ext_map = {
         "image/jpeg": ".jpg",
         "image/jpg":  ".jpg",
@@ -700,6 +1044,13 @@ async def _download_image(media_url: str, content_type: str) -> str:
     }
     ext = ext_map.get(content_type, ".jpg")
     filepath = os.path.join(TEMP_DIR, f"kisan_{uuid.uuid4().hex}{ext}")
+
+    if os.path.exists(media_url):
+        import shutil
+        await asyncio.to_thread(shutil.copyfile, media_url, filepath)
+        return filepath
+
+    from services.twilio_media_download import download_twilio_media_sync
 
     data = await asyncio.to_thread(download_twilio_media_sync, media_url)
     with open(filepath, "wb") as f:
